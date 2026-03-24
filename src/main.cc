@@ -7,12 +7,10 @@
 #include <iomanip>
 #include <ctime>
 #include <unistd.h>
-#include <libusb-1.0/libusb.h>
+#include <filesystem>
 
 extern "C" {
 #include "NoticeKFADC500USB.h"
-#include "nkusb.h"
-#include "usb3com.h"
 }
 
 #include "ConfigParser.hh"
@@ -23,7 +21,7 @@ extern "C" {
 std::atomic<bool> g_app_running(true);
 
 void SigIntHandler(int /*signum*/) {
-    std::cout << "\n[SYSTEM:WARN] Interrupt signal (Ctrl+C) received. Initiating graceful shutdown...\n";
+    std::cout << "\n\033[1;31m[SYSTEM:WARN] Interrupt signal (Ctrl+C) received. Initiating graceful shutdown...\033[0m\n";
     g_app_running = false;
 }
 
@@ -32,7 +30,8 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, SigIntHandler);
 
     std::string config_file = "";
-    std::string out_file = "kfadc500_data.dat";
+    // 💡 디폴트 출력 경로를 안전한 data/ 폴더로 지정
+    std::string out_file = "data/kfadc500_data.dat"; 
     int preset_events = 0;
     int preset_time = 0; 
     int sid = 0;
@@ -45,86 +44,150 @@ int main(int argc, char** argv) {
             case 'n': preset_events = std::stoi(optarg); break;
             case 't': preset_time = std::stoi(optarg); break;
             case 's': sid = std::stoi(optarg); break;
-            default:
-                std::cerr << "Usage: " << argv[0] << " -f <config> [-o <out>] [-n <events>] [-t <seconds>]\n";
-                return 1;
         }
     }
 
     if (config_file.empty()) {
-        std::cerr << "[SYSTEM:FATAL] Config file is missing! Usage: -f <config.txt>\n";
+        std::cerr << "Usage: " << argv[0] << " -f <config_file> [-o output.dat] [-n events] [-t seconds]\n";
         return 1;
+    }
+
+    // 💡 데이터 저장 디렉토리 자동 생성 로직
+    std::filesystem::path out_path(out_file);
+    std::filesystem::path dir_path = out_path.parent_path();
+    if (!dir_path.empty() && !std::filesystem::exists(dir_path)) {
+        std::filesystem::create_directories(dir_path);
+        std::cout << "\033[1;33m[SYSTEM:INFO] Created data directory: " << dir_path << "\033[0m\n";
     }
 
     KFADC500_Config config;
-    if (!ConfigParser::Parse(config_file, config)) {
-        std::cerr << "[SYSTEM:FATAL] Failed to parse config file: " << config_file << "\n";
-        return 1;
+    if (!ConfigParser::Parse(config_file, config)) return 1;
+
+    // ====================================================================
+    // 💡 [UX] DAQ 초기화 핵심 파라미터 시각화 테이블
+    // ====================================================================
+    auto now = std::chrono::system_clock::now();
+    std::time_t start_time = std::chrono::system_clock::to_time_t(now);
+
+    std::cout << "\n\033[1;36m============================================================\033[0m\n";
+    std::cout << "\033[1;36m [ KFADC500 DAQ Initialization Summary ] \033[0m\n";
+    std::cout << "\033[1;36m============================================================\033[0m\n";
+    std::cout << "  - Config File  : " << config_file << "\n";
+    std::cout << "  - Output File  : " << out_file << "\n";
+    std::cout << "  - Target Event : " << (preset_events > 0 ? std::to_string(preset_events) : "Infinite") << "\n";
+    std::cout << "  - Record Len   : " << config.record_length << " (" << config.record_length * 512 << " Bytes/Event)\n";
+    std::cout << "  - Trigger LUT  : 0x" << std::hex << std::uppercase << config.trigger_lut << std::nouppercase << std::dec << "\n";
+    std::cout << "  --------------------------------------------------------\n";
+    std::cout << "   [CH] | POLARITY | THRESHOLD | DELAY | DACOFFSET \n";
+    std::cout << "  --------------------------------------------------------\n";
+    for(int i = 0; i < 4; i++) {
+        std::cout << "   [" << i+1 << "] | " 
+                  << std::setw(8) << (config.polarity[i] == 0 ? "0 (NEG)" : "1 (POS)") << " | " 
+                  << std::setw(9) << config.threshold[i] << " | " 
+                  << std::setw(5) << config.delay[i] << " | " 
+                  << std::setw(9) << config.offset[i] << "\n";
+    }
+    std::cout << "  --------------------------------------------------------\n";
+    std::cout << "  - Start Time   : " << std::ctime(&start_time); 
+    std::cout << "\033[1;36m============================================================\033[0m\n\n";
+
+    USB3Init();
+
+    // ====================================================================
+    // [SET PHASE]
+    // ====================================================================
+    std::cout << "\033[1;32m>>> STARTING SET PHASE <<<\033[0m\n";
+    KFADC500open(sid);
+    
+    KFADC500write_RM(sid, 1, 1, 0, 0);
+    KFADC500reset(sid);
+    KFADC500write_DRAMON(sid, 1);
+    KFADC500calibrate(sid);
+
+    KFADC500write_AMODE(sid, config.filter);
+    KFADC500write_RL(sid, config.record_length);
+    KFADC500write_TLT(sid, config.trigger_lut, 0); 
+    KFADC500write_TOW(sid, 1000);
+
+    for (int ch = 1; ch <= 4; ++ch) {
+        int idx = ch - 1;
+        KFADC500write_DACOFF(sid, ch, config.offset[idx]);
+        KFADC500write_DLY(sid, ch, config.delay[idx]);
+        KFADC500write_POL(sid, ch, config.polarity[idx]);
+        KFADC500write_THR(sid, ch, config.threshold[idx]); 
+        KFADC500write_TM(sid, ch, config.pulse_width_en, config.pulse_count_en); 
+        KFADC500write_PCT(sid, ch, config.pulse_count_thr);
+        KFADC500write_PCI(sid, ch, config.pulse_count_int);
+        KFADC500write_PWT(sid, ch, config.pulse_width_thr);
+        KFADC500write_DT(sid, ch, config.deadtime);
+        KFADC500write_CW(sid, ch, config.coincidence_width);
     }
     
-    auto t_start = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    
-    std::cout << "\n\033[1;36m╔════════════════ RUN CONFIGURATION ════════════════╗\033[0m\n";
-    std::cout << "\033[1;36m║\033[0m Start Time   : " << std::put_time(std::localtime(&t_start), "%Y-%m-%d %H:%M:%S") << "\n";
-    std::cout << "\033[1;36m║\033[0m Config File  : " << config_file << "\n";
-    std::cout << "\033[1;36m║\033[0m Target File  : " << out_file << "\n";
-    std::cout << "\033[1;36m║\033[0m Target Limit : " << (preset_time > 0 ? std::to_string(preset_time) + " sec " : "") 
-                                               << (preset_events > 0 ? std::to_string(preset_events) + " evts" : "Infinite") << "\n";
-    std::cout << "\033[1;36m╚═══════════════════════════════════════════════════╝\033[0m\n";
+    std::cout << "[SYSTEM:INFO] Waiting 200ms for Analog Baseline Settling...\n";
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    if (libusb_init(NULL) < 0) return 1;
+    for (int ch = 1; ch <= 4; ++ch) KFADC500measure_PED(sid, ch);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200)); 
 
-    libusb_device_handle* devh = libusb_open_device_with_vid_pid(NULL, 0x04B4, 0x00F1);
-    if (!devh) {
-        std::cerr << "[SYSTEM:FATAL] Cannot open USB Device. Check permissions.\n";
-        libusb_exit(NULL);
-        return 1;
+    for (int ch = 1; ch <= 4; ++ch) {
+        std::cout << "[DAQ:INFO] CH" << ch << " Settled Pedestal: " << KFADC500read_PED(sid, ch) << "\n";
     }
-    if (libusb_kernel_driver_active(devh, 0) == 1) libusb_detach_kernel_driver(devh, 0);
-    libusb_claim_interface(devh, 0);
 
-    NoticeKFADC500USB_reset(sid);
-    NoticeKFADC500USB_write_RL(sid, config.record_length);
-    NoticeKFADC500USB_write_TLT(sid, config.trigger_lut);
-    NoticeKFADC500USB_write_AMODE(sid, config.filter);
-    
-    for (int ch = 0; ch < 4; ++ch) {
-        NoticeKFADC500USB_write_THR(sid, ch+1, config.threshold[ch]);
-        NoticeKFADC500USB_write_DACOFF(sid, ch+1, config.offset[ch]);
-        NoticeKFADC500USB_write_DLY(sid, ch+1, config.delay[ch]);
-        NoticeKFADC500USB_write_POL(sid, ch+1, config.polarity[ch]);
-    }
+    std::cout << "\033[1;33m[SYSTEM:INFO] Closing device to simulate set/run separation...\033[0m\n";
+    KFADC500close(sid);
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+
+    // ====================================================================
+    // [RUN PHASE]
+    // ====================================================================
+    std::cout << "\n\033[1;32m>>> STARTING RUN PHASE <<<\033[0m\n";
+    KFADC500open(sid); 
+    KFADC500reset(sid); 
 
     ObjectPool mem_pool(1000); 
     DataQueue data_queue;
     ZmqPublisher zmq_pub("tcp://*:5555", &data_queue);
-    ReadDataWorker usb_worker(devh, &mem_pool, &data_queue, out_file, preset_events, preset_time);
+    ReadDataWorker usb_worker(sid, &mem_pool, &data_queue, out_file, config.record_length, preset_events, preset_time);
 
     auto timer_start = std::chrono::steady_clock::now();
 
     zmq_pub.Start();
     usb_worker.Start();
-    NoticeKFADC500USB_start(sid);
+    
+    KFADC500start(sid); 
+    std::cout << "\033[1;32m[SYSTEM:INFO] Trigger FSM Armed. Ready for Physical Pulses.\033[0m\n";
 
     while (g_app_running && usb_worker.IsRunning()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    NoticeKFADC500USB_stop(sid);
+    KFADC500stop(sid);
     usb_worker.Stop();
     zmq_pub.Stop();
 
+    // ====================================================================
+    // 💡 [UX] 종료 타임스탬프 및 평균 Trigger Rate 출력
+    // ====================================================================
     auto timer_end = std::chrono::steady_clock::now();
     double total_sec = std::chrono::duration<double>(timer_end - timer_start).count();
+    
+    auto end_now = std::chrono::system_clock::now();
+    std::time_t end_time_t = std::chrono::system_clock::to_time_t(end_now);
 
-    std::cout << "\n\033[1;32m╔════════════════ ACQUISITION SUMMARY ══════════════╗\033[0m\n";
-    std::cout << "\033[1;32m║\033[0m \033[1;37mTotal Elapsed Time : \033[1;33m" << std::fixed << std::setprecision(2) << total_sec << " sec\033[0m\n";
-    std::cout << "\033[1;32m║\033[0m \033[1;37mData File Saved to : \033[1;36m" << out_file << "\033[0m\n";
-    std::cout << "\033[1;32m╚═══════════════════════════════════════════════════╝\033[0m\n";
+    int final_events = usb_worker.GetTotalAcquiredEvents();
+    double avg_trigger_rate = (total_sec > 0.0) ? (final_events / total_sec) : 0.0;
 
-    libusb_release_interface(devh, 0);
-    libusb_close(devh);
-    libusb_exit(NULL);
+    std::cout << "\n\033[1;32m================ ACQUISITION SUMMARY ================\033[0m\n";
+    std::cout << " End Time           : " << std::ctime(&end_time_t);
+    std::cout << " Total Elapsed Time : \033[1;33m" << std::fixed << std::setprecision(2) << total_sec << " sec\033[0m\n";
+    std::cout << " Total Events       : \033[1;36m" << final_events << " Events\033[0m\n";
+    std::cout << " Avg Trigger Rate   : \033[1;35m" << std::fixed << std::setprecision(1) << avg_trigger_rate << " Hz\033[0m\n";
+    std::cout << " Data File Saved to : \033[1;36m" << out_file << "\033[0m\n";
+    std::cout << "\033[1;32m=====================================================\033[0m\n";
+
+    KFADC500close(sid);
+    USB3Exit();
 
     return 0;
 }
