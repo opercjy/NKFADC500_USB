@@ -103,5 +103,7 @@ int main(int argc, char** argv) {
         std::cout << "\n\033[1;33m[SYSTEM:INFO] Display Mode Closed.\033[0m\n";
     }
 
+    (void)app;
+
     return 0;
 }

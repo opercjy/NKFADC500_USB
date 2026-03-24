@@ -10,6 +10,7 @@ set(CMAKE_C_STANDARD 99)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -Wextra -Wno-unused-parameter")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -Wall -Wno-pointer-sign")
+
 # ==============================================================================
 # 💡 [UX/UI 패치] 최종 빌드 산출물을 bin/ 과 lib/ 디렉토리로 자동 분리
 # ==============================================================================
@@ -17,6 +18,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/lib)
 file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/data)
+
 # -------------------------------------------------------------------
 # 2. 외부 의존성 탐색 (libusb-1.0, ZeroMQ, Threads, ROOT)
 # -------------------------------------------------------------------
@@ -33,7 +35,7 @@ find_package(ROOT REQUIRED COMPONENTS Core Tree RIO)
 # 3. 벤더 하드웨어 정적 라이브러리 구축 (ROOT 래퍼 제외, 순수 C 코어만)
 # -------------------------------------------------------------------
 add_library(notice_hw STATIC
-    # 💡 [수정] 중복 정의를 막기 위해 nkusb.c와 usb3com.c를 제거하고, 
+    # 중복 정의를 막기 위해 nkusb.c와 usb3com.c를 제거하고, 
     # 모든 함수가 포함된 메인 코어 하나만 컴파일합니다.
     vendor/kfadc500_usb/NoticeKFADC500USB.c
 )
@@ -45,6 +47,7 @@ target_include_directories(notice_hw PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/kfadc500_usb
     ${LIBUSB_INCLUDE_DIRS}
 )
+
 # -------------------------------------------------------------------
 # 4. [Target 1] 고속 Online DAQ 실행 파일 (ROOT 의존성 없음)
 # -------------------------------------------------------------------
@@ -52,7 +55,7 @@ add_executable(kfadc500_daq
     src/main.cc
     src/ReadDataWorker.cc
     src/ZmqPublisher.cc
-    src/ConfigParser.cc   # 💡 [핵심 패치] 파서 소스 코드를 빌드 대상에 추가!
+    src/ConfigParser.cc   # 파서 소스 코드를 빌드 대상에 추가!
 )
 
 target_include_directories(kfadc500_daq PRIVATE 
@@ -91,3 +94,24 @@ target_link_libraries(kfadc500_prod PRIVATE
 # 6. 설치 규칙
 # -------------------------------------------------------------------
 install(TARGETS kfadc500_daq kfadc500_prod DESTINATION bin)
+
+# ==============================================================================
+# 💡 [PHASE 4] Advanced ZMQ GUI Dashboard Integration
+# ==============================================================================
+message(STATUS "[PHASE 4] Setting up Python ZMQ GUI Dashboard Environment...")
+
+# GUI 실행을 위한 통합 실행 쉘 스크립트 생성 (bin/kfadc500_mon)
+set(MONITOR_SCRIPT "${CMAKE_SOURCE_DIR}/bin/kfadc500_mon")
+file(WRITE ${MONITOR_SCRIPT} "#!/bin/bash\n")
+file(APPEND ${MONITOR_SCRIPT} "# KFADC500 Unified Monitoring Dashboard Launcher\n\n")
+
+# Python 모듈 임포트를 위해 PYTHONPATH 환경 변수를 동적으로 세팅
+file(APPEND ${MONITOR_SCRIPT} "export PYTHONPATH=\$PYTHONPATH:${CMAKE_SOURCE_DIR}/python/gui\n")
+
+# GUI 메인 엔트리 실행
+file(APPEND ${MONITOR_SCRIPT} "python3 ${CMAKE_SOURCE_DIR}/python/gui/main.py \"\$@\"\n")
+
+# 생성된 스크립트에 실행 권한 부여
+execute_process(COMMAND chmod +x ${MONITOR_SCRIPT})
+
+message(STATUS "[PHASE 4] GUI Launcher created: ${MONITOR_SCRIPT}")
