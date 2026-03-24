@@ -3,7 +3,7 @@
 
 ![C++17](https://img.shields.io/badge/C++-17-blue.svg) ![CMake](https://img.shields.io/badge/CMake-3.15+-green.svg) ![Python](https://img.shields.io/badge/Python-3.8+-yellow.svg) ![ZeroMQ](https://img.shields.io/badge/ZeroMQ-IPC-red.svg) ![ROOT](https://img.shields.io/badge/CERN_ROOT-6.x-white.svg) ![Notice Certified](https://img.shields.io/badge/Notice_Hardware-Verified_Maintenance-orange.svg)
 
-**License & Notice:** 본 프레임워크는 고에너지 물리(HEP) 실험 및 학술 연구 목적으로 개발 및 유지보수되고 있습니다. `vendor/` 디렉토리 내에 포함된 로우레벨 하드웨어 제어 C 드라이버 소스 코드의 모든 지적 재산권(Intellectual Property)은 **Notice Korea**에 귀속됩니다. 
+**License & Notice:** 본 프레임워크는 고에너지 물리(HEP) 실험 및 학술 연구 목적으로 개발 및 유지보수되고 있습니다. `vendor/` 디렉토리 내에 포함된 로우레벨 하드웨어 제어 C 드라이버 소스 코드 **Notice Korea** 허락 하에 공유되었습니다. 
 *(본 문서는 대한민국 연구진을 위해 한국어로 작성되었습니다. 해외 연구자분들은 번역 플랫폼을 적극 활용해 주시기 바랍니다.)*
 
 **KFADC500 High-Performance DAQ**는 Notice Korea의 USB 3.0 기반 고속 파형 디지타이저(KFADC500, 500MS/s, 4CH)를 위한 엔터프라이즈급 무결성 데이터 수집 프레임워크입니다. 
