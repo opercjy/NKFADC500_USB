@@ -3,6 +3,7 @@
 #include <fstream>
 #include <algorithm>
 #include <TSystem.h>
+#include <iomanip>
 
 RootProducer::RootProducer(const std::string& input_file, const std::string& output_file, bool save_waveform, bool display_mode)
     : in_filename_(input_file), out_filename_(output_file), 
@@ -132,10 +133,15 @@ void RootProducer::RunBatchMode() {
     const int PED_START = 22;
     const int PED_END = 80;   
 
+    long long total_bytes_processed = 8; // 시작 8바이트 포함
     event_id_ = 0;
+
     while (true) {
         infile.read(reinterpret_cast<char*>(raw_event_data_.data()), event_size_bytes);
-        if (infile.gcount() < event_size_bytes) break;
+        int bytes_read = infile.gcount();
+        if (bytes_read < event_size_bytes) break;
+        
+        total_bytes_processed += bytes_read;
 
         for (int ch = 0; ch < 4; ++ch) {
             pedestal_[ch] = 0; charge_[ch] = 0; peak_[ch] = -9999;
@@ -164,9 +170,10 @@ void RootProducer::RunBatchMode() {
         event_id_++;
 
         if (event_id_ % 5000 == 0) {
-            // 💡 [UX 패치] 터미널 도배를 방지하는 한 줄 프로그레스 바 
             std::cout << "\r\033[K\033[1;34m[PROD:INFO]\033[0m Processing... \033[1;32m" << event_id_ << "\033[0m events saved." << std::flush;
         }
     }
-    std::cout << "\n\033[1;32m[PROD:SUCCESS] Total " << event_id_ << " events saved to ROOT TTree.\033[0m\n";
+    
+    double total_mb = total_bytes_processed / (1024.0 * 1024.0);
+    std::cout << "\n\033[1;32m[PROD:SUCCESS] Total " << event_id_ << " events (" << std::fixed << std::setprecision(2) << total_mb << " MB) saved to ROOT TTree.\033[0m\n";
 }

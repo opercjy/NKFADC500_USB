@@ -30,7 +30,6 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, SigIntHandler);
 
     std::string config_file = "";
-    // 💡 디폴트 출력 경로를 안전한 data/ 폴더로 지정
     std::string out_file = "data/kfadc500_data.dat"; 
     int preset_events = 0;
     int preset_time = 0; 
@@ -52,7 +51,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // 💡 데이터 저장 디렉토리 자동 생성 로직
     std::filesystem::path out_path(out_file);
     std::filesystem::path dir_path = out_path.parent_path();
     if (!dir_path.empty() && !std::filesystem::exists(dir_path)) {
@@ -63,9 +61,6 @@ int main(int argc, char** argv) {
     KFADC500_Config config;
     if (!ConfigParser::Parse(config_file, config)) return 1;
 
-    // ====================================================================
-    // 💡 [UX] DAQ 초기화 핵심 파라미터 시각화 테이블
-    // ====================================================================
     auto now = std::chrono::system_clock::now();
     std::time_t start_time = std::chrono::system_clock::to_time_t(now);
 
@@ -93,9 +88,6 @@ int main(int argc, char** argv) {
 
     USB3Init();
 
-    // ====================================================================
-    // [SET PHASE]
-    // ====================================================================
     std::cout << "\033[1;32m>>> STARTING SET PHASE <<<\033[0m\n";
     KFADC500open(sid);
     
@@ -137,10 +129,6 @@ int main(int argc, char** argv) {
     KFADC500close(sid);
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
-
-    // ====================================================================
-    // [RUN PHASE]
-    // ====================================================================
     std::cout << "\n\033[1;32m>>> STARTING RUN PHASE <<<\033[0m\n";
     KFADC500open(sid); 
     KFADC500reset(sid); 
@@ -166,9 +154,6 @@ int main(int argc, char** argv) {
     usb_worker.Stop();
     zmq_pub.Stop();
 
-    // ====================================================================
-    // 💡 [UX] 종료 타임스탬프 및 평균 Trigger Rate 출력
-    // ====================================================================
     auto timer_end = std::chrono::steady_clock::now();
     double total_sec = std::chrono::duration<double>(timer_end - timer_start).count();
     
@@ -177,11 +162,16 @@ int main(int argc, char** argv) {
 
     int final_events = usb_worker.GetTotalAcquiredEvents();
     double avg_trigger_rate = (total_sec > 0.0) ? (final_events / total_sec) : 0.0;
+    
+    // 데이터 크기 계산 로직
+    size_t final_bytes = usb_worker.GetTotalAcquiredBytes();
+    double final_mb = final_bytes / (1024.0 * 1024.0);
 
     std::cout << "\n\033[1;32m================ ACQUISITION SUMMARY ================\033[0m\n";
     std::cout << " End Time           : " << std::ctime(&end_time_t);
     std::cout << " Total Elapsed Time : \033[1;33m" << std::fixed << std::setprecision(2) << total_sec << " sec\033[0m\n";
     std::cout << " Total Events       : \033[1;36m" << final_events << " Events\033[0m\n";
+    std::cout << " Total Data Size    : \033[1;36m" << std::fixed << std::setprecision(2) << final_mb << " MB\033[0m\n";
     std::cout << " Avg Trigger Rate   : \033[1;35m" << std::fixed << std::setprecision(1) << avg_trigger_rate << " Hz\033[0m\n";
     std::cout << " Data File Saved to : \033[1;36m" << out_file << "\033[0m\n";
     std::cout << "\033[1;32m=====================================================\033[0m\n";

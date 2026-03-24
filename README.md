@@ -121,15 +121,20 @@ root -l -q 'AnalyzeSPE.C("data/run_001.root", 0)'
 - [x] **Phase 1: Core CLI & Raw Binary DAQ**
   - Zero-Malloc Object Pool 기반의 1MB Mega-Bulk 수집 코어 완성.
   - ANSI C++ 기반의 연구자 친화적 터미널 UX(초기화 요약표, 한 줄 모니터링) 적용 완료.
+
 - [x] **Phase 2: Offline ROOT Production & Physics Analysis**
   - 트리거 래치 노이즈 마스킹 및 TTree 초고속 일괄 변환기 구현.
   - 데이터/바이너리 디렉토리 분리 및 시스템 자동화.
   - MINUIT2 엔진 기반 단일 광전자(SPE) 정밀 분석 매크로 완성.
-- [ ] **Phase 3: Real-Time ZMQ Monitoring GUI (ROOT Native GUI)**
-  - 기존 FADC400 및 FADC500 프로덕션 환경에서 검증된 ROOT 기반 Native C++ GUI (`TGMainFrame`, `TRootEmbeddedCanvas`) 아키텍처 완벽 계승.
-  - ZeroMQ PUB/SUB 패턴을 활용하여 수집 코어(DAQ)의 시스템 부하(Overhead)를 0으로 유지하는 비동기 통신 구현.
-  - 빔 타임(Beam-time) 및 캘리브레이션 중 실시간 파형(Waveform) 스냅샷, 전하합(Charge), 피크(Peak) 히스토그램을 즉각적으로 시각화하는 온라인 모니터링 디스플레이 구축 예정.
 
+- [ ] **Phase 3: Real-Time Online Monitor (CLI/ROOT-based)**
+  - 과거 FADC400 및 FADC500 "Mini" 프로덕션 환경에서 검증된 CLI 기반의 실시간 온라인 모니터 프로그램 구축.
+  - 데이터 획득(DAQ)과 동시에 ROOT `TApplication`과 `TCanvas`를 활용하여 실시간 파형(Waveform) 스냅샷 및 파형 적분 전하량(Charge Histogram) 분포를 즉각적으로 시각화.
+
+- [ ] **Phase 4: Real-Time ZMQ Monitoring GUI (ROOT Native GUI)**
+  - ROOT 기반 Native C++ GUI (`TGMainFrame`, `TRootEmbeddedCanvas`) 아키텍처 완벽 계승.
+  - ZeroMQ PUB/SUB 패턴을 활용하여 수집 코어(DAQ)의 시스템 부하(Overhead)를 0으로 유지하는 비동기 통신 구현.
+  - 빔 타임(Beam-time) 및 캘리브레이션 중 필수적인 물리 변수들을 종합적으로 모니터링하는 통합 디스플레이 구축 예정.
 ---
 
 ## Author & Acknowledgments

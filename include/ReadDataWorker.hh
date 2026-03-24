@@ -13,11 +13,11 @@ public:
     void Start();
     void Stop();
     
-    // 메인 스레드에서 실행 상태를 확인하기 위함
     bool IsRunning() const { return is_running_.load(); }
-    
-    // 💡 [신규 추가] 획득한 총 이벤트 수 반환 (종료 서머리용)
     int GetTotalAcquiredEvents() const { return total_acquired_events_.load(); }
+    
+    // 신규 추가: 획득한 총 데이터 크기(바이트) 반환
+    size_t GetTotalAcquiredBytes() const { return total_acquired_bytes_.load(); }
 
 private:
     void AcquisitionLoop();
@@ -35,6 +35,7 @@ private:
     int preset_time_;
     
     std::atomic<int> total_acquired_events_;
+    std::atomic<size_t> total_acquired_bytes_; // 신규 추가
 
     std::thread acq_thread_;
     std::thread write_thread_;

@@ -13,7 +13,8 @@ extern "C" {
 ReadDataWorker::ReadDataWorker(int sid, ObjectPool* pool, DataQueue* queue, 
                                const std::string& out_filename, int record_length, int preset_events, int preset_time)
     : sid_(sid), outfile_(out_filename), is_running_(false), pool_(pool), queue_(queue), 
-      record_length_(record_length), preset_events_(preset_events), preset_time_(preset_time), total_acquired_events_(0) 
+      record_length_(record_length), preset_events_(preset_events), preset_time_(preset_time), 
+      total_acquired_events_(0), total_acquired_bytes_(0) 
 {}
 
 ReadDataWorker::~ReadDataWorker() { Stop(); }
@@ -57,7 +58,6 @@ void ReadDataWorker::AcquisitionLoop() {
             int current_events = total_acquired_events_.load();
             double rate = (current_events - last_events) / print_dt;
             
-            // 💡 [UX 패치] \r(캐리지 리턴)과 \033[K(줄 끝까지 지우기)를 조합하여 터미널 한 줄에 덮어쓰기!
             printf("\r\033[K\033[1;36m[MONITOR]\033[0m \033[1;33mTime: %5.1fs\033[0m | \033[1;32mEvents: %-8d\033[0m | \033[1;35mRate: %-8.1f Hz\033[0m | \033[1;34mQ: %-3zu\033[0m | \033[1;31mPool: %-3zu\033[0m", 
                    elapsed_sec, current_events, rate, queue_->Size(), pool_->FreeSize());
             fflush(stdout);
@@ -81,6 +81,9 @@ void ReadDataWorker::AcquisitionLoop() {
 
         block->valid_size = read_kb * 1024;
         queue_->Push(block); 
+
+        // 데이터 바이트 수 누적
+        total_acquired_bytes_ += block->valid_size;
 
         if (event_size > 0) {
             total_acquired_events_ += (block->valid_size / event_size);
