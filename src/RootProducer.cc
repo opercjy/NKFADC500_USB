@@ -4,11 +4,13 @@
 #include <algorithm>
 #include <TSystem.h>
 #include <iomanip>
+#include <TCanvas.h>
+#include <TH1D.h>
 
 RootProducer::RootProducer(const std::string& input_file, const std::string& output_file, bool save_waveform, bool display_mode)
     : in_filename_(input_file), out_filename_(output_file), 
       save_waveform_(save_waveform), display_mode_(display_mode),
-      root_file_(nullptr), tree_(nullptr), event_id_(0), record_length_(0), preset_events_(0) {
+      root_file_(nullptr), tree_(nullptr), event_id_(0), record_length_(0), preset_events_(0), total_bytes_processed_(0) {
     
     if (!display_mode_) {
         root_file_ = new TFile(out_filename_.c_str(), "RECREATE");
@@ -36,7 +38,8 @@ RootProducer::~RootProducer() {
     }
 }
 
-void RootProducer::RunDisplayMode() {
+// (RunDisplayMode 함수는 기존과 100% 동일하므로 생략하지 마시고 그대로 유지하십시오.)
+void RootProducer::RunDisplayMode(std::atomic<bool>& is_running) {
     std::ifstream infile(in_filename_, std::ios::binary);
     if (!infile.is_open()) return;
 
@@ -50,6 +53,8 @@ void RootProducer::RunDisplayMode() {
     int samples_per_ch = num_shorts / 4; 
     
     int total_events = (file_size - 8) / event_size_bytes; 
+    if (total_events <= 0) return;
+
     raw_event_data_.resize(num_shorts);
 
     const int SKIP_BINS = 20; 
@@ -68,7 +73,7 @@ void RootProducer::RunDisplayMode() {
     int current_id = 0;
     std::string input;
 
-    while (true) {
+    while (is_running.load()) {
         if (current_id < 0) current_id = 0;
         if (current_id >= total_events) current_id = total_events - 1;
 
@@ -117,7 +122,7 @@ void RootProducer::RunDisplayMode() {
     delete c1;
 }
 
-void RootProducer::RunBatchMode() {
+void RootProducer::RunBatchMode(std::atomic<bool>& is_running) {
     std::ifstream infile(in_filename_, std::ios::binary);
     if (!infile.is_open()) return;
 
@@ -125,6 +130,8 @@ void RootProducer::RunBatchMode() {
     infile.read(reinterpret_cast<char*>(&preset_events_), sizeof(int));
 
     int event_size_bytes = record_length_ * 512;
+    if (event_size_bytes <= 0) return;
+
     int num_shorts = event_size_bytes / 2; 
     int samples_per_ch = num_shorts / 4; 
     raw_event_data_.resize(num_shorts);
@@ -133,15 +140,15 @@ void RootProducer::RunBatchMode() {
     const int PED_START = 22;
     const int PED_END = 80;   
 
-    long long total_bytes_processed = 8; // 시작 8바이트 포함
+    total_bytes_processed_ = 8; 
     event_id_ = 0;
 
-    while (true) {
+    while (is_running.load()) {
         infile.read(reinterpret_cast<char*>(raw_event_data_.data()), event_size_bytes);
         int bytes_read = infile.gcount();
         if (bytes_read < event_size_bytes) break;
         
-        total_bytes_processed += bytes_read;
+        total_bytes_processed_ += bytes_read;
 
         for (int ch = 0; ch < 4; ++ch) {
             pedestal_[ch] = 0; charge_[ch] = 0; peak_[ch] = -9999;
@@ -173,7 +180,5 @@ void RootProducer::RunBatchMode() {
             std::cout << "\r\033[K\033[1;34m[PROD:INFO]\033[0m Processing... \033[1;32m" << event_id_ << "\033[0m events saved." << std::flush;
         }
     }
-    
-    double total_mb = total_bytes_processed / (1024.0 * 1024.0);
-    std::cout << "\n\033[1;32m[PROD:SUCCESS] Total " << event_id_ << " events (" << std::fixed << std::setprecision(2) << total_mb << " MB) saved to ROOT TTree.\033[0m\n";
+    // 💡 메인 함수에서 예쁘게 출력하기 위해 여기서 자체 출력하던 라인은 삭제합니다.
 }

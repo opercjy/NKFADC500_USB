@@ -27,13 +27,19 @@ void ReadDataWorker::Start() {
 }
 
 void ReadDataWorker::Stop() {
-    is_running_ = false;
+    if (!is_running_) return; 
+    is_running_ = false; // 루프 중단 시그널 발생
+    
     if (pool_) pool_->WakeUpAll(); 
     if (queue_) queue_->WakeUpAll();
     
-    if (acq_thread_.joinable()) acq_thread_.join();
-    if (write_thread_.joinable()) write_thread_.join();
-    std::cout << "[DAQ:INFO] Worker Threads Safely Terminated.\n";
+    bool thread_joined = false;
+    if (acq_thread_.joinable()) { acq_thread_.join(); thread_joined = true; }
+    if (write_thread_.joinable()) { write_thread_.join(); thread_joined = true; }
+    
+    if (thread_joined) {
+        std::cout << "[DAQ:INFO] Worker Threads Safely Terminated.\n";
+    }
 }
 
 void ReadDataWorker::AcquisitionLoop() {
@@ -58,12 +64,14 @@ void ReadDataWorker::AcquisitionLoop() {
             int current_events = total_acquired_events_.load();
             double rate = (current_events - last_events) / print_dt;
             
-            printf("\r\033[K\033[1;36m[MONITOR]\033[0m \033[1;33mTime: %5.1fs\033[0m | \033[1;32mEvents: %-8d\033[0m | \033[1;35mRate: %-8.1f Hz\033[0m | \033[1;34mQ: %-3zu\033[0m | \033[1;31mPool: %-3zu\033[0m", 
+            printf("\r\033[K\033[1;36m[MONITOR]\033[0m \033[1;33m%.1fs\033[0m | \033[1;32mEvt: %d\033[0m | \033[1;35m%.1f Hz\033[0m | \033[1;34mQ: %zu\033[0m | \033[1;31mPool: %zu\033[0m", 
                    elapsed_sec, current_events, rate, queue_->Size(), pool_->FreeSize());
             fflush(stdout);
             
             last_events = current_events; last_print_time = now;
         }
+
+        if (!is_running_) break; // 하드웨어 읽기 전 방어
 
         int bcount_kb = KFADC500read_BCOUNT(sid_);
         if (bcount_kb <= 0) {
@@ -71,18 +79,24 @@ void ReadDataWorker::AcquisitionLoop() {
             continue; 
         }
 
+        if (!is_running_) break; // 블록 획득 전 방어
+
         int max_kb = BULK_READ_SIZE / 1024;
         int read_kb = (bcount_kb > max_kb) ? max_kb : bcount_kb;
 
         DataBlock* block = pool_->Acquire(is_running_);
         if (!block) continue;
 
+        if (!is_running_) { // 진짜 데이터 읽기 직전 최후 방어
+            pool_->Release(block);
+            break;
+        }
+
         KFADC500read_DATA(sid_, read_kb, reinterpret_cast<char*>(block->data));
 
         block->valid_size = read_kb * 1024;
         queue_->Push(block); 
 
-        // 데이터 바이트 수 누적
         total_acquired_bytes_ += block->valid_size;
 
         if (event_size > 0) {

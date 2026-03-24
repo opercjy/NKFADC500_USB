@@ -25,8 +25,12 @@ void ZmqPublisher::Start() {
 void ZmqPublisher::Stop() {
     is_running_ = false;
     if (data_queue_) data_queue_->WakeUpAll();
-    if (pub_thread_.joinable()) pub_thread_.join();
-    std::cout << "[ZMQ:INFO] Publisher Terminated.\n";
+    
+    // 💡 중복 실행 방어
+    if (pub_thread_.joinable()) {
+        pub_thread_.join();
+        std::cout << "[ZMQ:INFO] Publisher Terminated.\n";
+    }
 }
 
 void ZmqPublisher::PublishLoop() {

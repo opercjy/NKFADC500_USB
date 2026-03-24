@@ -88,20 +88,28 @@ int main(int argc, char** argv) {
 
     USB3Init();
 
+    // ====================================================================
+    // 💡 [SET PHASE] : 하드웨어 크래시 및 Ctrl+C 즉시 반응 방어 로직 적용
+    // ====================================================================
     std::cout << "\033[1;32m>>> STARTING SET PHASE <<<\033[0m\n";
-    KFADC500open(sid);
     
-    KFADC500write_RM(sid, 1, 1, 0, 0);
-    KFADC500reset(sid);
-    KFADC500write_DRAMON(sid, 1);
-    KFADC500calibrate(sid);
+    if (g_app_running) {
+        KFADC500open(sid);
+        KFADC500write_RM(sid, 1, 1, 0, 0);
+        KFADC500reset(sid);
+        KFADC500write_DRAMON(sid, 1);
+        KFADC500calibrate(sid);
+    }
 
-    KFADC500write_AMODE(sid, config.filter);
-    KFADC500write_RL(sid, config.record_length);
-    KFADC500write_TLT(sid, config.trigger_lut, 0); 
-    KFADC500write_TOW(sid, 1000);
+    if (g_app_running) {
+        KFADC500write_AMODE(sid, config.filter);
+        KFADC500write_RL(sid, config.record_length);
+        KFADC500write_TLT(sid, config.trigger_lut, 0); 
+        KFADC500write_TOW(sid, 1000);
+    }
 
     for (int ch = 1; ch <= 4; ++ch) {
+        if (!g_app_running) break; // 즉각 중단
         int idx = ch - 1;
         KFADC500write_DACOFF(sid, ch, config.offset[idx]);
         KFADC500write_DLY(sid, ch, config.delay[idx]);
@@ -115,20 +123,50 @@ int main(int argc, char** argv) {
         KFADC500write_CW(sid, ch, config.coincidence_width);
     }
     
-    std::cout << "[SYSTEM:INFO] Waiting 200ms for Analog Baseline Settling...\n";
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
-    for (int ch = 1; ch <= 4; ++ch) KFADC500measure_PED(sid, ch);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200)); 
+    if (g_app_running) std::cout << "[SYSTEM:INFO] Waiting 200ms for Analog Baseline Settling...\n";
+    
+    // 💡 Sleep을 잘게 쪼개어 대기 중에도 Ctrl+C가 눌리면 즉각 빠져나오게 구성
+    for (int i = 0; i < 20; ++i) {
+        if (!g_app_running) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 
     for (int ch = 1; ch <= 4; ++ch) {
+        if (!g_app_running) break;
+        KFADC500measure_PED(sid, ch);
+    }
+
+    for (int i = 0; i < 20; ++i) {
+        if (!g_app_running) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    for (int ch = 1; ch <= 4; ++ch) {
+        if (!g_app_running) break;
         std::cout << "[DAQ:INFO] CH" << ch << " Settled Pedestal: " << KFADC500read_PED(sid, ch) << "\n";
     }
 
-    std::cout << "\033[1;33m[SYSTEM:INFO] Closing device to simulate set/run separation...\033[0m\n";
-    KFADC500close(sid);
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+    if (g_app_running) {
+        std::cout << "\033[1;33m[SYSTEM:INFO] Closing device to simulate set/run separation...\033[0m\n";
+        KFADC500close(sid);
+    }
 
+    for (int i = 0; i < 200; ++i) { // 2초 대기
+        if (!g_app_running) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    // 💡 초기화 도중 Ctrl+C가 눌렸다면 프로그램 완전 종료 (진입 차단)
+    if (!g_app_running) {
+        std::cout << "\n\033[1;31m[SYSTEM:WARN] DAQ Initialization Aborted. Exiting safely...\033[0m\n";
+        USB3Exit();
+        return 0;
+    }
+
+
+    // ====================================================================
+    // [RUN PHASE] : 정상적으로 설정이 완료된 경우에만 진입
+    // ====================================================================
     std::cout << "\n\033[1;32m>>> STARTING RUN PHASE <<<\033[0m\n";
     KFADC500open(sid); 
     KFADC500reset(sid); 
@@ -146,13 +184,16 @@ int main(int argc, char** argv) {
     KFADC500start(sid); 
     std::cout << "\033[1;32m[SYSTEM:INFO] Trigger FSM Armed. Ready for Physical Pulses.\033[0m\n";
 
+    // 메인 루프: Ctrl+C가 눌리기 전까지 대기
     while (g_app_running && usb_worker.IsRunning()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    KFADC500stop(sid);
+    std::cout << "\n[SYSTEM:INFO] Shutting down DAQ gracefully...\n";
+    
     usb_worker.Stop();
     zmq_pub.Stop();
+    KFADC500stop(sid);
 
     auto timer_end = std::chrono::steady_clock::now();
     double total_sec = std::chrono::duration<double>(timer_end - timer_start).count();
@@ -162,8 +203,6 @@ int main(int argc, char** argv) {
 
     int final_events = usb_worker.GetTotalAcquiredEvents();
     double avg_trigger_rate = (total_sec > 0.0) ? (final_events / total_sec) : 0.0;
-    
-    // 데이터 크기 계산 로직
     size_t final_bytes = usb_worker.GetTotalAcquiredBytes();
     double final_mb = final_bytes / (1024.0 * 1024.0);
 
