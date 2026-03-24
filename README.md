@@ -135,13 +135,14 @@ python python/cli/online_monitor.py
 
 ## Screenshots (GUI Dashboard)
 
-*(실제 운용 중인 시스템의 캡처 화면들을 아래에 삽입하십시오.)*
-
-- **Live Monitor & Dashboard View:** `[이미지 삽입 예정]`
-- **Run Control & Auto Scan Setup:** `[이미지 삽입 예정]`
-- **Trigger LUT Simulator:** `[이미지 삽입 예정]`
-- **CAEN High Voltage Control:** `[이미지 삽입 예정]`
-- **SQLite Database History:** `[이미지 삽입 예정]`
+- **Live Monitor & Dashboard View:** `[<img width="1522" height="1010" alt="image" src="https://github.com/user-attachments/assets/b8707586-f31f-4e0d-9504-c2bd4cc13939" />]`
+- **Run Control & Auto Scan Setup:** `[<img width="1522" height="1010" alt="image" src="https://github.com/user-attachments/assets/03d79b18-183f-4a9b-8baa-876ea108e13a" />]`
+- **Trigger LUT Simulator:** `[<img width="1522" height="1010" alt="image" src="https://github.com/user-attachments/assets/868bef38-ec83-40db-ace2-653fea987907" />]`
+- **CAEN High Voltage Control:** `[<img width="1522" height="1010" alt="image" src="https://github.com/user-attachments/assets/9573b84b-94f6-4650-86b2-343dfc81c550" />]`
+- **SQLite Database History:** `[<img width="1522" height="1010" alt="image" src="https://github.com/user-attachments/assets/bc9dd778-65ed-4bc4-85be-fcb571066716" />]`
+- **Offline Production 1** `[<img width="1220" height="840" alt="image" src="https://github.com/user-attachments/assets/05bb78a3-a7e2-480f-a50f-3a7a42fa50fe" />]`
+- **Offline Production 2** `[<img width="1522" height="1010" alt="image" src="https://github.com/user-attachments/assets/37a890e1-0e84-49a3-9eea-eee56b9d86c8" />]`
+- **Configuration** `[<img width="1522" height="1010" alt="image" src="https://github.com/user-attachments/assets/2164d248-cbd6-4dd3-b7f7-d999c3fa8e68" />]`
 
 ---
 
