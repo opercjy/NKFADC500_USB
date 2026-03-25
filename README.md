@@ -104,33 +104,36 @@ chmod +x rebuild.sh
 ### [MODE A] Graphical Interface Mode (통합 관제탑)
 C++ 코어 명령어를 몰라도 마우스 클릭만으로 DAQ, 모니터링, HV 제어, ROOT 변환, DB 조회까지 모두 수행할 수 있는 마스터 애플리케이션입니다.
 ```bash
-python python/gui/main.py
+# 통합 관제탑 실행
+./bin/kfadc500_mon
+
+# (Tip: Rocky Linux 9 등 최신 Wayland 환경에서 창이 뜨지 않거나 뻗는 경우 아래 명령어로 실행하세요)
+QT_QPA_PLATFORM=xcb ./bin/kfadc500_mon
 ```
 
 ### [MODE B] Command Line Mode (전문가용 터미널 제어)
-GUI 오버헤드 없이 스크립트로 장비를 굴리거나 원격 서버(SSH) 환경에서 가볍게 작업할 때 사용합니다.
+GUI 오버헤드 없이 쉘 스크립트로 장비를 굴리거나 원격 서버(SSH) 환경에서 가볍게 작업할 때 사용합니다.
 
 **1. Online DAQ (`kfadc500_daq`)**
-초고속 데이터 획득을 백그라운드에서 수행합니다. (종료 시 `Ctrl+C`)
+초고속 데이터 획득을 백그라운드에서 수행합니다. (종료 시 `Ctrl+C` 입력)
 ```bash
 ./bin/kfadc500_daq -f config/kfadc500.config -o data/run_001.dat
 ```
 
 **2. CLI Real-Time Monitoring (`online_monitor.py`)**
-DAQ가 실행 중일 때 새로운 터미널을 열고 가볍게 파형만 띄워봅니다.
+DAQ가 실행 중일 때 새로운 터미널을 열고 파형만 가볍게 모니터링합니다.
 ```bash
 python python/cli/online_monitor.py
 ```
 
 **3. Offline ROOT Production (`kfadc500_prod`)**
 ```bash
-# 배치 모드 (-w 옵션 추가 시 파형 배열 통째로 저장)
+# 배치 모드 (수집된 .dat 파일을 ROOT 트리로 초고속 일괄 변환)
 ./bin/kfadc500_prod data/run_001.dat -w
 
-# 인터랙티브 모드 (ROOT TCanvas로 파형 탐색)
+# 인터랙티브 모드 (터미널 뷰어로 개별 파형 스텝 탐색)
 ./bin/kfadc500_prod -d data/run_001.dat
 ```
-
 ---
 
 ## Screenshots (GUI Dashboard)
