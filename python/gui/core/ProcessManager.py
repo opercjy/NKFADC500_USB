@@ -7,6 +7,7 @@ class ProcessManager(QObject):
     log_signal = Signal(str)
     process_finished = Signal(int)
     stat_signal = Signal(dict) 
+    run_started = Signal() # 💡 실제 측정 시작을 알리는 시그널
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -44,54 +45,37 @@ class ProcessManager(QObject):
             self.process.write((text + "\n").encode('utf-8'))
 
     def handle_stdout(self):
-        raw_text = bytes(self.process.readAllStandardOutput()).decode('utf-8', errors='ignore')
-        for line in raw_text.split('\n'):
-            for subline in line.split('\r'):
-                if not subline.strip(): continue
-                clean_line = self.ansi_escape.sub('', subline).strip()
-                clean_line = clean_line.replace('[F[K', '').replace('[K', '')
-                
-                # DAQ 지표 파싱
-                if "[MONITOR]" in clean_line:
-                    stats = {}
-                    m_ev = re.search(r'Evt:\s*(\d+)', clean_line)
-                    m_rt = re.search(r'([0-9.]+)\s*Hz', clean_line)
-                    m_q = re.search(r'Q:\s*(\d+)', clean_line)
-                    m_pl = re.search(r'Pool:\s*(\d+)', clean_line)
-                    if m_ev: stats['events'] = int(m_ev.group(1))
-                    if m_rt: stats['rate'] = float(m_rt.group(1))
-                    if m_q:  stats['dataq'] = int(m_q.group(1))
-                    if m_pl: stats['pool'] = int(m_pl.group(1))
-                    self.stat_signal.emit(stats)
-                    continue 
-                
-                # Production 프로그레스 파싱
-                if "events saved" in clean_line:
-                    m_pe = re.search(r'Processing\.\.\.\s*(\d+)', clean_line)
-                    if m_pe: self.stat_signal.emit({'prod_events': int(m_pe.group(1))})
-                    continue
-                    
-                # 💡 [핵심 패치] Production 최종 요약 지표 독립적 파싱
-                if "Processed Events" in clean_line:
-                    m_te = re.search(r'Processed Events\s*:\s*(\d+)', clean_line)
-                    if m_te: self.stat_signal.emit({'prod_final_events': int(m_te.group(1))})
-                elif "Conversion Speed" in clean_line:
-                    m_ps = re.search(r'Speed\s*:\s*([0-9.]+)\s*MB/s', clean_line)
-                    if m_ps: self.stat_signal.emit({'prod_speed': float(m_ps.group(1))})
+        raw_data = bytes(self.process.readAllStandardOutput()).decode('utf-8', errors='ignore')
+        for line in raw_data.splitlines():
+            clean_line = self.ansi_escape.sub('', line).strip()
+            if not clean_line: continue
+            
+            # 💡 [핵심 패치] 하드웨어가 켜지면 GUI 타이머를 리셋하라는 시그널을 보냄
+            if "Trigger FSM Armed" in clean_line:
+                self.run_started.emit()
 
-                html_line = subline.replace('\033[1;32m', '<span style="color:#388E3C; font-weight:bold;">') \
-                                   .replace('\033[1;33m', '<span style="color:#F57C00; font-weight:bold;">') \
-                                   .replace('\033[1;36m', '<span style="color:#0288D1; font-weight:bold;">') \
-                                   .replace('\033[1;31m', '<span style="color:#D32F2F; font-weight:bold;">') \
-                                   .replace('\033[1;35m', '<span style="color:#7B1FA2; font-weight:bold;">') \
-                                   .replace('\033[0m', '</span>')
-                html_line = self.ansi_escape.sub('', html_line)
-                self.log_signal.emit(html_line)
+            if "events saved" in clean_line:
+                m_pe = re.search(r'Processing\.\.\.\s*(\d+)', clean_line)
+                if m_pe: self.stat_signal.emit({'prod_events': int(m_pe.group(1))})
+                
+            if "Processed Events" in clean_line:
+                m_te = re.search(r'Processed Events\s*:\s*(\d+)', clean_line)
+                if m_te: self.stat_signal.emit({'prod_final_events': int(m_te.group(1))})
+            elif "Conversion Speed" in clean_line:
+                m_ps = re.search(r'Speed\s*:\s*([0-9.]+)\s*MB/s', clean_line)
+                if m_ps: self.stat_signal.emit({'prod_speed': float(m_ps.group(1))})
+
+            html_line = clean_line.replace('[SYSTEM:INFO]', '<span style="color:#388E3C; font-weight:bold;">[SYSTEM:INFO]</span>') \
+                                  .replace('[DAQ:INFO]', '<span style="color:#1F77B4; font-weight:bold;">[DAQ:INFO]</span>') \
+                                  .replace('[SYSTEM:WARN]', '<span style="color:#F57C00; font-weight:bold;">[SYSTEM:WARN]</span>') \
+                                  .replace('Info:', '<span style="color:#388E3C;">Info:</span>')
+            
+            self.log_signal.emit(html_line)
 
     def handle_stderr(self):
         data = self.process.readAllStandardError().data().decode('utf-8', errors='ignore')
         for line in data.splitlines():
-            if line.strip(): self.log_signal.emit(f"<span style='color:#D32F2F; font-weight:bold;'>{line}</span>")
+            if line.strip(): self.log_signal.emit(f"<span style='color:#D32F2F; font-weight:bold;'>{line.strip()}</span>")
 
     def handle_finished(self, exit_code):
         self.log_signal.emit(f"<b>[SYSTEM] Process Finished with exit code {exit_code}.</b>")

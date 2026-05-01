@@ -34,6 +34,7 @@ class MainWindow(QMainWindow):
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; color: #1F77B4; }
             QTextEdit { background-color: #FFFFFF; color: #333333; border: 1px solid #BDBDBD; }
             QLineEdit, QSpinBox { background-color: #FFFFFF; color: #333333; padding: 5px; border: 1px solid #BDBDBD; }
+            QComboBox { background-color: #FFFFFF; padding: 3px; border: 1px solid #BDBDBD; }
         """)
 
         self.db_manager = DatabaseManager()
@@ -58,12 +59,12 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.dashboard, stretch=3)
 
         self.tab_db = DatabaseTab(self.db_manager)
-        self.tab_run = RunControlTab(self.daq_manager, self.db_manager, self.dashboard, self.append_log)
+        self.tab_hv = HVControlTab(self.append_log)
+        self.tab_run = RunControlTab(self.daq_manager, self.db_manager, self.dashboard, self.append_log, self.tab_hv.get_hv_summary)
         self.tab_monitor = LiveMonitorTab()
         self.tab_prod = ProductionTab(self.db_manager, self.append_log, self.tab_db.refresh_db)
         self.tab_cfg = ConfigTab(self.append_log, self.tab_run.parse_config_and_update_dashboard)
         self.tab_lut = TriggerLUTTab()
-        self.tab_hv = HVControlTab(self.append_log)
 
         self.tabs.addTab(self.tab_run, "Run Control")
         self.tabs.addTab(self.tab_monitor, "Live Monitor")
@@ -86,25 +87,36 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(console_widget)
         main_splitter.setSizes([700, 250])
 
-        self.daq_manager.stat_signal.connect(self.tab_run.update_external_stats)
+        # Production 오프라인 툴의 상태만 RunControl로 전달 (온라인 통계는 분리됨)
         self.daq_manager.process_finished.connect(self.tab_run.handle_daq_finished)
         self.daq_manager.process_finished.connect(lambda: self.tab_db.refresh_db())
         self.tab_prod.prod_manager.process_finished.connect(lambda: self.tab_db.refresh_db())
 
         self.receiver.data_ready.connect(self.dispatch_plot_data)
+        self.tab_monitor.monitoring_toggled.connect(self.receiver.set_monitoring_state)
+        self.tab_monitor.clear_requested.connect(self.receiver.request_clear)
+        
         self.receiver.start() 
 
         self.clock_timer = QTimer(self)
         self.clock_timer.timeout.connect(self.global_clock_tick)
         self.clock_timer.start(1000)
 
-    @Slot(object, object)
-    def dispatch_plot_data(self, waveform, charge_list):
+    # 💡 [핵심 패치] ZmqWorker로부터 텔레메트리 데이터를 수신합니다.
+    @Slot(object, object, int, dict)
+    def dispatch_plot_data(self, waveforms, charges, samples_per_ch, telemetry):
+        # 1. 텔레메트리 숫자(대시보드)는 모니터 화면이 꺼져있어도 100% 무조건 업데이트됩니다!
+        if telemetry:
+            self.tab_run.update_external_stats(telemetry)
+            
+        if isinstance(waveforms, str) and waveforms == "TELEMETRY_ONLY":
+            return
+
+        # 2. 무거운 배열 그리기 연산은 모니터 탭이 켜져 있을 때만 실행됩니다.
         is_visible = (self.tabs.currentIndex() == 1)
-        self.tab_monitor.update_plots(waveform, charge_list, is_visible)
+        self.tab_monitor.update_plots(waveforms, charges, samples_per_ch, is_visible)
 
     def global_clock_tick(self):
-        # 💡 [신규] 디지털 시계 업데이트
         now = datetime.now()
         self.dashboard.lbl_current_time.setText(now.strftime("%Y-%m-%d  %H:%M:%S"))
 
@@ -116,10 +128,7 @@ class MainWindow(QMainWindow):
         total, used, free = shutil.disk_usage(os.getcwd())
         self.dashboard.lbl_disk.setText(f"Disk Free: {free // (2**30)} GB")
 
-        if hasattr(self.tab_run, 'config_record_len'):
-            if self.receiver.record_length != self.tab_run.config_record_len:
-                self.receiver.update_record_length(self.tab_run.config_record_len)
-
+    # 💡 [핵심 패치] 덮어쓰기 로직을 지우고, 순수하게 콘솔 로깅 역할만 수행합니다.
     @Slot(str)
     def append_log(self, text):
         self.console.append(text)

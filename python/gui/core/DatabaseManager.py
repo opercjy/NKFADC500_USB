@@ -11,12 +11,10 @@ class DatabaseManager:
     def init_db(self):
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        # DAQ 수집 이력 테이블
         c.execute('''CREATE TABLE IF NOT EXISTS daq_runs 
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, run_mode TEXT, file_name TEXT, 
                       start_time TEXT, end_time TEXT, total_events INTEGER, 
                       size_mb REAL, avg_rate_hz REAL, config_summary TEXT)''')
-        # 오프라인 변환 이력 테이블
         c.execute('''CREATE TABLE IF NOT EXISTS prod_runs 
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT, process_time TEXT, 
                       prod_mode TEXT, total_events INTEGER, speed_mbps REAL)''')
@@ -57,3 +55,12 @@ class DatabaseManager:
         rows = c.fetchall()
         conn.close()
         return rows
+
+    # 💡 [핵심 패치] 마지막 DAQ 파일명을 가져와서 Prefix, Number, Tag를 추론하기 위한 함수
+    def get_last_daq_run(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("SELECT file_name FROM daq_runs ORDER BY id DESC LIMIT 1")
+        row = c.fetchone()
+        conn.close()
+        return row[0] if row else None

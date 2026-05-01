@@ -2,18 +2,18 @@ import os
 import re
 from datetime import datetime
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, 
-                               QLineEdit, QPushButton, QLabel, QSpinBox, QRadioButton, QFileDialog)
+                               QLineEdit, QPushButton, QLabel, QSpinBox, QRadioButton, QFileDialog, QComboBox)
 from PySide6.QtCore import QTimer
 
 class RunControlTab(QWidget):
-    def __init__(self, daq_manager, db_manager, dashboard, log_callback):
+    def __init__(self, daq_manager, db_manager, dashboard, log_callback, get_hv_cb=None):
         super().__init__()
         self.daq = daq_manager
         self.db = db_manager
         self.dash = dashboard
         self.log_callback = log_callback
+        self.get_hv_cb = get_hv_cb
 
-        # 상태 관리 변수
         self.start_time = None
         self.last_events = 0
         self.config_record_len = 8
@@ -22,26 +22,49 @@ class RunControlTab(QWidget):
         self.max_subruns = 1
         self.scan_queue = []
         self.active_config_text = ""
-        self.run_number = 1 # 런 넘버 추적용 변수
 
         self.init_ui()
         self.parse_config_and_update_dashboard()
+        self.load_last_run_settings()
+        
+        # 💡 [핵심 패치] 하드웨어가 준비되었다는 신호를 받으면, 비로소 시간을 재기 시작합니다!
+        self.daq.run_started.connect(self.on_actual_run_started)
 
     def init_ui(self):
         run_layout = QVBoxLayout(self)
         
-        # 1. 기본 설정 (Basic Settings)
         grp_basic = QGroupBox("Basic DAQ Settings")
         l_basic = QVBoxLayout()
         
         h_cfg = QHBoxLayout()
         h_cfg.addWidget(QLabel("Config File:")); self.in_cfg = QLineEdit("config/kfadc500.config"); h_cfg.addWidget(self.in_cfg)
         btn_cfg_browse = QPushButton("Browse"); btn_cfg_browse.clicked.connect(self.browse_config_file); h_cfg.addWidget(btn_cfg_browse)
-        
-        h_out = QHBoxLayout()
-        h_out.addWidget(QLabel("Output Base:")); self.in_out = QLineEdit("data/run_"); h_out.addWidget(self.in_out)
-        btn_out_browse = QPushButton("Browse"); btn_out_browse.clicked.connect(self.browse_output_dir); h_out.addWidget(btn_out_browse)
-        l_basic.addLayout(h_cfg); l_basic.addLayout(h_out)
+        l_basic.addLayout(h_cfg)
+
+        h_dir = QHBoxLayout()
+        h_dir.addWidget(QLabel("Output Dir:"))
+        self.in_out_dir = QLineEdit("data")
+        btn_dir_browse = QPushButton("Browse")
+        btn_dir_browse.clicked.connect(self.browse_output_dir)
+        h_dir.addWidget(self.in_out_dir); h_dir.addWidget(btn_dir_browse)
+        l_basic.addLayout(h_dir)
+
+        h_name = QHBoxLayout()
+        h_name.addWidget(QLabel("Prefix:"))
+        self.in_prefix = QLineEdit("test") 
+        h_name.addWidget(self.in_prefix)
+
+        h_name.addWidget(QLabel("Run No:"))
+        self.sp_run_no = QSpinBox()
+        self.sp_run_no.setRange(1, 99999)
+        self.sp_run_no.setValue(1)
+        h_name.addWidget(self.sp_run_no)
+
+        h_name.addWidget(QLabel("Tag:"))
+        self.cb_tag = QComboBox()
+        self.cb_tag.addItems(["physics", "calibration", "test", "pedestal", "dark_noise"])
+        h_name.addWidget(self.cb_tag)
+        l_basic.addLayout(h_name)
         
         h_limit = QHBoxLayout()
         self.rb_cont = QRadioButton("Continuous"); self.rb_cont.setChecked(True)
@@ -50,9 +73,9 @@ class RunControlTab(QWidget):
         self.sp_limit = QSpinBox(); self.sp_limit.setRange(1, 99999999); self.sp_limit.setValue(10000)
         h_limit.addWidget(self.rb_cont); h_limit.addWidget(self.rb_evt); h_limit.addWidget(self.rb_time); h_limit.addWidget(self.sp_limit)
         l_basic.addLayout(h_limit)
+        
         grp_basic.setLayout(l_basic); run_layout.addWidget(grp_basic)
 
-        # 2. 다중 런 설정 (Multi-Run)
         grp_multi = QGroupBox("Multi-Run / Long-Term DAQ")
         l_multi = QHBoxLayout()
         self.sp_sub_max = QSpinBox(); self.sp_sub_max.setRange(1, 9999); self.sp_sub_max.setValue(1)
@@ -62,7 +85,6 @@ class RunControlTab(QWidget):
         l_multi.addStretch()
         grp_multi.setLayout(l_multi); run_layout.addWidget(grp_multi)
 
-        # 3. 임계값 스캔 설정 (Auto Threshold Scan)
         grp_scan = QGroupBox("Auto Threshold Scan")
         l_scan = QHBoxLayout()
         self.sp_start = QSpinBox(); self.sp_start.setRange(10, 1000); self.sp_start.setValue(50)
@@ -75,7 +97,6 @@ class RunControlTab(QWidget):
         l_scan.addWidget(QLabel("Idle (s):")); l_scan.addWidget(self.sp_scan_idle)
         grp_scan.setLayout(l_scan); run_layout.addWidget(grp_scan)
 
-        # 4. 제어 버튼 패널
         h_btns = QHBoxLayout()
         self.btn_start = QPushButton("[ START STANDARD DAQ ]")
         self.btn_start.setStyleSheet("background-color: #2CA02C; color: white; padding: 15px; font-weight:bold;")
@@ -93,9 +114,28 @@ class RunControlTab(QWidget):
         h_btns.addWidget(self.btn_start); h_btns.addWidget(self.btn_scan); h_btns.addWidget(self.btn_stop)
         run_layout.addLayout(h_btns); run_layout.addStretch()
 
-    # =========================================================
-    # 유틸리티 및 설정 파싱 로직
-    # =========================================================
+    def on_actual_run_started(self):
+        # 하드웨어 세팅(약 2~3초)이 끝난 후 이 함수가 불리면 그때 시간을 잽니다.
+        self.start_time = datetime.now()
+        self.dash.lbl_start.setText(f"Start: {self.start_time.strftime('%H:%M:%S')}")
+        self.log_callback("<span style='color:#009688;'><b>[GUI] Synchronized Timer with Hardware Start.</b></span>")
+
+    def load_last_run_settings(self):
+        last_file = self.db.get_last_daq_run()
+        if not last_file: return
+        basename = os.path.basename(last_file) 
+        name_no_ext = os.path.splitext(basename)[0] 
+        match = re.search(r'_(?P<num>\d+)_?(?P<tag>[a-zA-Z_]+)?(?:_sub\d+)?$', name_no_ext)
+        if match:
+            prefix = name_no_ext[:match.start()]
+            if prefix: self.in_prefix.setText(prefix)
+            last_num = int(match.group('num'))
+            self.sp_run_no.setValue(last_num + 1)
+            tag = match.group('tag')
+            if tag:
+                index = self.cb_tag.findText(tag)
+                if index >= 0: self.cb_tag.setCurrentIndex(index)
+
     def browse_config_file(self):
         f, _ = QFileDialog.getOpenFileName(self, "Select DAQ Config", "config", "Config Files (*.config *.cfg);;All Files (*)")
         if f: 
@@ -105,7 +145,7 @@ class RunControlTab(QWidget):
     def browse_output_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Select Output Directory", "data")
         if d: 
-            self.in_out.setText(os.path.join(d, "run_"))
+            self.in_out_dir.setText(d)
 
     def parse_config_and_update_dashboard(self):
         params = {}
@@ -154,22 +194,18 @@ class RunControlTab(QWidget):
             self.dash.lbl_limit.setText(f"Limit: Max {self.sp_limit.value()} Sec")
             return 0, self.sp_limit.value()
 
-    # =========================================================
-    # 파일명 및 런 넘버 관리 로직
-    # =========================================================
     def get_auto_filename(self, suffix=""):
-        base_dir = self.in_out.text() 
-        run_str = f"{self.run_number:03d}"
-        full_name = f"{base_dir}{run_str}{suffix}.dat"
-        return full_name
+        base_dir = self.in_out_dir.text().strip()
+        prefix = self.in_prefix.text().strip()
+        run_no = self.sp_run_no.value()
+        tag = self.cb_tag.currentText()
+        filename = f"{prefix}_{run_no:03d}_{tag}{suffix}.dat"
+        return os.path.join(base_dir, filename)
 
     def increment_run_number(self):
-        self.run_number += 1
-        self.log_callback(f"<span style='color:#1976D2; font-weight:bold;'>[SYSTEM] Ready for next run. Target Run Number: {self.run_number:03d}</span>")
+        self.sp_run_no.setValue(self.sp_run_no.value() + 1)
+        self.log_callback(f"<span style='color:#1976D2; font-weight:bold;'>[SYSTEM] Ready for next run. Target Run Number: {self.sp_run_no.value():03d}</span>")
 
-    # =========================================================
-    # DAQ 실행 로직
-    # =========================================================
     def start_standard_daq(self, subrun_idx=1):
         self.auto_mode = "STANDARD"
         self.current_subrun = subrun_idx
@@ -178,15 +214,16 @@ class RunControlTab(QWidget):
         self.btn_start.setEnabled(False); self.btn_scan.setEnabled(False); self.btn_stop.setEnabled(True)
         self.dash.lbl_mode.setText(f"MODE: RUN [{self.current_subrun}/{self.max_subruns}]")
         
-        self.start_time = datetime.now()
-        self.dash.lbl_start.setText(f"Start: {self.start_time.strftime('%H:%M:%S')}")
+        # 아직 셋업 단계이므로 타이머를 켜지 않습니다.
+        self.start_time = None
+        self.dash.lbl_start.setText("Start: Waiting for HW...")
         self.last_events = 0
         
         cfg = self.in_cfg.text()
         suffix = f"_sub{self.current_subrun:02d}" if self.max_subruns > 1 else ""
         out = self.get_auto_filename(suffix)
         
-        self.dash.lbl_file.setText(f"File: {out}")
+        self.dash.lbl_file.setText(f"File: {os.path.basename(out)}")
         evts, time = self.setup_run_limits()
         self.parse_config_and_update_dashboard()
         self.daq.start_daq(cfg, out, evts, time)
@@ -211,14 +248,14 @@ class RunControlTab(QWidget):
         self.dash.lbl_mode.setText(f"MODE: SCAN [THR {curr_thr}]")
         self.update_config_threshold(curr_thr)
         
-        self.start_time = datetime.now()
-        self.dash.lbl_start.setText(f"Start: {self.start_time.strftime('%H:%M:%S')}")
+        self.start_time = None
+        self.dash.lbl_start.setText("Start: Waiting for HW...")
         self.last_events = 0
         
         cfg = self.in_cfg.text()
         out = self.get_auto_filename(f"_scan_thr{curr_thr}")
         
-        self.dash.lbl_file.setText(f"File: {out}")
+        self.dash.lbl_file.setText(f"File: {os.path.basename(out)}")
         self.dash.lbl_limit.setText("Limit: Scan Config")
         
         evts = self.sp_limit.value() if self.rb_evt.isChecked() else 0
@@ -231,9 +268,6 @@ class RunControlTab(QWidget):
         self.max_subruns = 1
         self.daq.stop_process()
 
-    # =========================================================
-    # 종료 처리 및 DB 연동
-    # =========================================================
     def handle_daq_finished(self, exit_code):
         if self.start_time is not None:
             end_t = datetime.now()
@@ -241,9 +275,12 @@ class RunControlTab(QWidget):
             size = self.last_events * self.config_record_len * 512 / 1048576.0
             
             clean_filename = self.dash.lbl_file.text().replace("File: ", "").strip()
+            hv_info = self.get_hv_cb() if self.get_hv_cb else ""
+            full_config_summary = f"{self.active_config_text} {hv_info}"
+            
             self.db.log_daq_run(self.auto_mode, clean_filename, 
                                 self.start_time.strftime("%Y-%m-%d %H:%M:%S"), end_t.strftime("%Y-%m-%d %H:%M:%S"), 
-                                self.last_events, size, rate, self.active_config_text)
+                                self.last_events, size, rate, full_config_summary)
 
         if self.auto_mode == "STANDARD" and self.current_subrun < self.max_subruns:
             idle_sec = self.sp_sub_idle.value()

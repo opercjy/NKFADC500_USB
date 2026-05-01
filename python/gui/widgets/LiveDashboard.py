@@ -11,7 +11,6 @@ class LiveDashboard(QGroupBox):
     def init_ui(self):
         l_dash = QVBoxLayout(self)
         
-        # 💡 [신규 추가] LED 스타일의 현재 시간 전광판
         self.lbl_current_time = QLabel("----/--/-- --:--:--")
         self.lbl_current_time.setAlignment(Qt.AlignCenter)
         self.lbl_current_time.setStyleSheet(
@@ -49,7 +48,8 @@ class LiveDashboard(QGroupBox):
 
         h_sys = QHBoxLayout()
         self.lbl_q = QLabel("DataQ: 0"); self.lbl_q.setStyleSheet("background: #FFF9C4; border: 1px solid #FBC02D; padding: 3px; color: #F57F17;")
-        self.lbl_p = QLabel("Pool: 1000"); self.lbl_p.setStyleSheet("background: #C8E6C9; border: 1px solid #388E3C; padding: 3px; color: #1B5E20;")
+        # 💡 [UX 개선] "Used Pool" 적용
+        self.lbl_p = QLabel("Used Pool: 0"); self.lbl_p.setStyleSheet("background: #C8E6C9; border: 1px solid #388E3C; padding: 3px; color: #1B5E20;")
         h_sys.addWidget(self.lbl_q); h_sys.addWidget(self.lbl_p)
         l_dash.addLayout(h_sys)
 
@@ -71,6 +71,11 @@ class LiveDashboard(QGroupBox):
             self.lbl_size.setText(f"File Size: {size_mb:.2f} MB")
             if elapsed_sec > 0:
                 self.lbl_speed.setText(f"Speed: {size_mb / elapsed_sec:.2f} MB/s")
+        
         if 'rate' in stats: self.lbl_rate.setText(f"Rate: {stats['rate']} Hz")
         if 'dataq' in stats: self.lbl_q.setText(f"DataQ: {stats['dataq']}")
-        if 'pool' in stats: self.lbl_p.setText(f"Pool: {stats['pool']}")
+        
+        # 💡 [UX 개선] 전체 1000개 중 사용 중인 개수 역계산
+        if 'pool' in stats: 
+            used_blocks = 1000 - stats['pool']
+            self.lbl_p.setText(f"Used Pool: {used_blocks}")

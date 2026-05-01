@@ -6,7 +6,6 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 
-# CAEN 공식 라이브러리 임포트 시도 및 예외 처리
 try:
     from caen_libs import caenhvwrapper as hv
     from caen_libs import caenhvwrapperflags as hvflags
@@ -25,17 +24,12 @@ class HVControlTab(QWidget):
         self.target_slot = 0  
 
         self.init_ui()
-
-        # 실시간 VMon, IMon 모니터링 타이머 (1초 주기)
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self.poll_hv_status)
 
     def init_ui(self):
         layout = QVBoxLayout(self)
 
-        # =========================================================
-        # 라이브러리 의존성 경고 패널
-        # =========================================================
         if not CAEN_LIBS_AVAILABLE:
             lbl_warn = QLabel(
                 "<b>[CRITICAL WARNING]</b> <code>caen-libs</code> Python binding is not installed.<br>"
@@ -45,9 +39,6 @@ class HVControlTab(QWidget):
             lbl_warn.setStyleSheet("background-color: #FFEBEE; color: #D32F2F; border: 1px solid #D32F2F; padding: 10px;")
             layout.addWidget(lbl_warn)
 
-        # =========================================================
-        # 최상단: 운용 모드 선택 (가장 중요한 분기점)
-        # =========================================================
         h_mode = QHBoxLayout()
         h_mode.addWidget(QLabel("<b>HV Operation Mode:</b>"))
         self.combo_op_mode = QComboBox()
@@ -61,7 +52,6 @@ class HVControlTab(QWidget):
         h_mode.addStretch()
         layout.addLayout(h_mode)
 
-        # 💡 [핵심 패치] QStackedWidget을 이용한 다중 화면(윈도우) 스위칭
         self.stacked_widget = QStackedWidget()
         layout.addWidget(self.stacked_widget, stretch=1)
 
@@ -113,39 +103,67 @@ class HVControlTab(QWidget):
         self.stacked_widget.addWidget(self.page_digital)
 
         # ---------------------------------------------------------
-        # [화면 2] ORTEC 아날로그 수동 대기 윈도우 (인덱스 1)
+        # [화면 2] ORTEC 아날로그 수동 입력 윈도우 (인덱스 1)
         # ---------------------------------------------------------
         self.page_analog = QWidget()
         v_ana = QVBoxLayout(self.page_analog)
         
         lbl_ana = QLabel(
-            "<span style='font-size: 24px; color: #D32F2F;'><b>ANALOG MANUAL MODE ACTIVE</b></span><br><br>"
-            "<span style='font-size: 16px; color: #555555;'>"
-            "Background Polling and Software Controls are <b>SAFELY DISABLED</b>.<br><br>"
-            "Please adjust the High Voltage directly using the dials on the <b>ORTEC 556</b> front panel.</span>"
+            "<span style='font-size: 20px; color: #D32F2F;'><b>ANALOG MANUAL MODE ACTIVE</b></span><br><br>"
+            "<span style='font-size: 14px; color: #555555;'>"
+            "Background Polling and CAEN Software Controls are <b>DISABLED</b>.<br>"
+            "Please adjust the High Voltage directly using the dials on the <b>ORTEC 556</b> front panel.<br>"
+            "<b>Enter your manual settings below. They will be saved to the Database upon DAQ completion.</b></span>"
         )
         lbl_ana.setAlignment(Qt.AlignCenter)
-        lbl_ana.setStyleSheet("background-color: #F5F5F5; border: 3px dashed #BDBDBD; border-radius: 15px;")
+        lbl_ana.setStyleSheet("background-color: #F5F5F5; border: 2px dashed #BDBDBD; border-radius: 10px; padding: 15px;")
         v_ana.addWidget(lbl_ana)
         
+        # 💡 [핵심 패치] 아날로그 모드용 수동 입력 테이블 추가
+        self.tbl_ana = QTableWidget(4, 3)
+        self.tbl_ana.setHorizontalHeaderLabels(["Channel", "Manual VSet (V)", "Manual ISet (mA)"])
+        self.tbl_ana.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for i in range(4):
+            it_ch = QTableWidgetItem(f"CH {i+1}")
+            it_ch.setFlags(Qt.ItemIsEnabled)
+            it_ch.setTextAlignment(Qt.AlignCenter)
+            self.tbl_ana.setItem(i, 0, it_ch)
+            self.tbl_ana.setItem(i, 1, QTableWidgetItem("0.0"))
+            self.tbl_ana.setItem(i, 2, QTableWidgetItem("0.0"))
+            
+        v_ana.addWidget(self.tbl_ana)
         self.stacked_widget.addWidget(self.page_analog)
 
+    # 💡 [핵심 패치] 현재 모드에 따라 DB에 박제할 문자열을 만들어주는 마법의 함수
+    def get_hv_summary(self):
+        summary = []
+        if self.combo_op_mode.currentIndex() == 1: # Analog Mode
+            for i in range(4):
+                v = self.tbl_ana.item(i, 1).text()
+                c = self.tbl_ana.item(i, 2).text()
+                summary.append(f"CH{i+1}:{v}V({c}mA)")
+            return "[Analog_HV] " + ", ".join(summary)
+        else: # Digital Mode
+            for i in range(self.num_channels):
+                v = self.tbl_ch.item(i, 1).text()
+                c = self.tbl_ch.item(i, 3).text()
+                summary.append(f"CH{i+1}:{v}V({c}uA)")
+            return "[CAEN_HV] " + ", ".join(summary)
+
     def on_op_mode_changed(self, index):
-        """콤보박스 선택에 따라 화면을 완전히 교체하고 풀링을 제어합니다."""
-        if index == 1: # Analog Mode
-            # 아날로그 모드로 넘어가면 혹시 열려있던 디지털 통신을 강제로 끊고 타이머 정지
+        if index == 1: 
             if self.is_connected:
                 self.disconnect_hv()
             self.stacked_widget.setCurrentIndex(1)
             self.log_callback("<span style='color:#7B1FA2;'><b>[HV:SYSTEM] Switched to Analog Mode. Background polling disabled.</b></span>")
-        else: # Digital Mode
+        else: 
             self.stacked_widget.setCurrentIndex(0)
             self.log_callback("<span style='color:#1976D2;'><b>[HV:SYSTEM] Switched to CAEN Digital Control Mode.</b></span>")
 
     def build_channel_table(self, channels):
         self.tbl_ch.setRowCount(channels)
         for i in range(channels):
-            self.tbl_ch.setItem(i, 0, QTableWidgetItem(f"CH {i}"))
+            self.tbl_ch.setItem(i, 0, QTableWidgetItem(f"CH {i+1}"))
             self.tbl_ch.setItem(i, 1, QTableWidgetItem("0.0"))
             
             vmon_item = QTableWidgetItem("0.0")
@@ -286,7 +304,7 @@ class HVControlTab(QWidget):
         
         try:
             self.device.set_ch_param(self.target_slot, [ch], "Pw", target_pw)
-            self.log_callback(f"<span style='color:#0288D1;'><b>[HV:INFO] CH{ch} Power commanded to {'ON' if target_pw else 'OFF'}.</b></span>")
+            self.log_callback(f"<span style='color:#0288D1;'><b>[HV:INFO] CH{ch+1} Power commanded to {'ON' if target_pw else 'OFF'}.</b></span>")
         except CaenError as e:
             self.log_callback(f"<span style='color:#D32F2F;'><b>[HV:ERROR] Failed to toggle power: {e.message}</b></span>")
 

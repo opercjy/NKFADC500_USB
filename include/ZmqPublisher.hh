@@ -15,6 +15,8 @@ public:
 
 private:
     void PublishLoop();
+    
+    // Zero-copy 전송이 끝난 후 호출되는 콜백 (다시 Pool로 반환)
     static void FreeZmqMessage(void* data, void* hint);
 
     void* zmq_ctx_;

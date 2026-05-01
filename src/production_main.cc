@@ -84,7 +84,6 @@ int main(int argc, char** argv) {
     std::time_t end_time_t = std::chrono::system_clock::to_time_t(end_sys);
     double elapsed_sec = std::chrono::duration<double>(end_steady - start_steady).count();
 
-    // 💡 BATCH 모드일 때만 종합 성능 서머리 출력
     if (!display_mode) {
         int final_events = producer.GetTotalEvents();
         double final_mb = producer.GetTotalBytes() / (1024.0 * 1024.0);
@@ -103,7 +102,7 @@ int main(int argc, char** argv) {
         std::cout << "\n\033[1;33m[SYSTEM:INFO] Display Mode Closed.\033[0m\n";
     }
 
-    (void)app;
+    if (app) delete app;
 
     return 0;
 }

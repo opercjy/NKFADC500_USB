@@ -26,11 +26,14 @@ void SigIntHandler(int /*signum*/) {
 }
 
 int main(int argc, char** argv) {
+    // 💡 [핵심 버그 수정] OS의 4KB 파이프 버퍼링을 완전히 비활성화! 이제 로그가 즉시 출력됩니다.
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     std::signal(SIGINT, SigIntHandler);
     std::signal(SIGTERM, SigIntHandler);
 
     std::string config_file = "";
-    std::string out_file = "data/kfadc500_data.dat"; 
+    std::string out_file = "data/run_001.dat"; 
     int preset_events = 0;
     int preset_time = 0; 
     int sid = 0;
@@ -88,9 +91,6 @@ int main(int argc, char** argv) {
 
     USB3Init();
 
-    // ====================================================================
-    // 💡 [SET PHASE] : 하드웨어 크래시 및 Ctrl+C 즉시 반응 방어 로직 적용
-    // ====================================================================
     std::cout << "\033[1;32m>>> STARTING SET PHASE <<<\033[0m\n";
     
     if (g_app_running) {
@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
     }
 
     for (int ch = 1; ch <= 4; ++ch) {
-        if (!g_app_running) break; // 즉각 중단
+        if (!g_app_running) break; 
         int idx = ch - 1;
         KFADC500write_DACOFF(sid, ch, config.offset[idx]);
         KFADC500write_DLY(sid, ch, config.delay[idx]);
@@ -125,7 +125,6 @@ int main(int argc, char** argv) {
     
     if (g_app_running) std::cout << "[SYSTEM:INFO] Waiting 200ms for Analog Baseline Settling...\n";
     
-    // 💡 Sleep을 잘게 쪼개어 대기 중에도 Ctrl+C가 눌리면 즉각 빠져나오게 구성
     for (int i = 0; i < 20; ++i) {
         if (!g_app_running) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -151,22 +150,17 @@ int main(int argc, char** argv) {
         KFADC500close(sid);
     }
 
-    for (int i = 0; i < 200; ++i) { // 2초 대기
+    for (int i = 0; i < 200; ++i) { 
         if (!g_app_running) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    // 💡 초기화 도중 Ctrl+C가 눌렸다면 프로그램 완전 종료 (진입 차단)
     if (!g_app_running) {
         std::cout << "\n\033[1;31m[SYSTEM:WARN] DAQ Initialization Aborted. Exiting safely...\033[0m\n";
         USB3Exit();
         return 0;
     }
 
-
-    // ====================================================================
-    // [RUN PHASE] : 정상적으로 설정이 완료된 경우에만 진입
-    // ====================================================================
     std::cout << "\n\033[1;32m>>> STARTING RUN PHASE <<<\033[0m\n";
     KFADC500open(sid); 
     KFADC500reset(sid); 
@@ -184,16 +178,19 @@ int main(int argc, char** argv) {
     KFADC500start(sid); 
     std::cout << "\033[1;32m[SYSTEM:INFO] Trigger FSM Armed. Ready for Physical Pulses.\033[0m\n";
 
-    // 메인 루프: Ctrl+C가 눌리기 전까지 대기
+    // 💡 [클린 파이프라인] 더 이상 터미널에 [MONITOR] 텍스트를 뱉지 않습니다. 오직 ZMQ 통신으로만 대시보드에 쏩니다.
     while (g_app_running && usb_worker.IsRunning()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    std::cout << "\n[SYSTEM:INFO] Shutting down DAQ gracefully...\n";
+    std::cout << "\033[1;33m[SYSTEM:INFO] Stopping Hardware Trigger (Draining FIFO)...\033[0m\n";
+    KFADC500stop(sid);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    std::cout << "[SYSTEM:INFO] Shutting down DAQ gracefully...\n";
     
     usb_worker.Stop();
     zmq_pub.Stop();
-    KFADC500stop(sid);
 
     auto timer_end = std::chrono::steady_clock::now();
     double total_sec = std::chrono::duration<double>(timer_end - timer_start).count();

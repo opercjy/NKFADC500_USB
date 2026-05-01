@@ -27,20 +27,18 @@ pkg_check_modules(LIBUSB REQUIRED libusb-1.0)
 pkg_check_modules(ZMQ REQUIRED libzmq)
 find_package(Threads REQUIRED)
 
-# CERN ROOT 프레임워크 탐색 (오프라인 프로덕션 용도)
-# 주의: 빌드 전 터미널에서 `source /path/to/root/bin/thisroot.sh` 가 실행되어 있어야 합니다.
+# CERN ROOT 프레임워크 탐색
 find_package(ROOT REQUIRED COMPONENTS Core Tree RIO)
+# 💡 [위치 수정] ROOT 환경 설정을 글로벌로 끌어올림
+include(${ROOT_USE_FILE}) 
 
 # -------------------------------------------------------------------
-# 3. 벤더 하드웨어 정적 라이브러리 구축 (ROOT 래퍼 제외, 순수 C 코어만)
+# 3. 벤더 하드웨어 정적 라이브러리 구축 
 # -------------------------------------------------------------------
 add_library(notice_hw STATIC
-    # 중복 정의를 막기 위해 nkusb.c와 usb3com.c를 제거하고, 
-    # 모든 함수가 포함된 메인 코어 하나만 컴파일합니다.
     vendor/kfadc500_usb/NoticeKFADC500USB.c
 )
 
-# 헤더(Header) 파일들을 찾기 위한 Include 경로는 그대로 유지합니다.
 target_include_directories(notice_hw PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/nkusb/nkusb
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/usb3com/usb3com
@@ -49,32 +47,33 @@ target_include_directories(notice_hw PUBLIC
 )
 
 # -------------------------------------------------------------------
-# 4. [Target 1] 고속 Online DAQ 실행 파일 (ROOT 의존성 없음)
+# 4. [Target 1] 고속 Online DAQ 실행 파일 
 # -------------------------------------------------------------------
 add_executable(kfadc500_daq
     src/main.cc
     src/ReadDataWorker.cc
     src/ZmqPublisher.cc
-    src/ConfigParser.cc   # 파서 소스 코드를 빌드 대상에 추가!
+    src/ConfigParser.cc
+    src/RootProducer.cc   # 💡 [추가] 실시간 온라인 적분을 위해 포함!
 )
 
 target_include_directories(kfadc500_daq PRIVATE 
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${ZMQ_INCLUDE_DIRS}
+    ${ROOT_INCLUDE_DIRS}  # 💡 [추가] ROOT 헤더 인식
 )
 
 target_link_libraries(kfadc500_daq PRIVATE
     notice_hw
     ${LIBUSB_LIBRARIES}
     ${ZMQ_LIBRARIES}
+    ${ROOT_LIBRARIES}     # 💡 [추가] ROOT 라이브러리 링크
     Threads::Threads
 )
 
 # -------------------------------------------------------------------
 # 5. [Target 2] Offline ROOT Production 변환기 실행 파일
 # -------------------------------------------------------------------
-include(${ROOT_USE_FILE}) # ROOT 컴파일 플래그 자동 적용
-
 add_executable(kfadc500_prod
     src/production_main.cc
     src/RootProducer.cc
@@ -85,33 +84,20 @@ target_include_directories(kfadc500_prod PRIVATE
     ${ROOT_INCLUDE_DIRS}
 )
 
-# ROOT 라이브러리 직접 링크
 target_link_libraries(kfadc500_prod PRIVATE
     ${ROOT_LIBRARIES}
 )
 
 # -------------------------------------------------------------------
-# 6. 설치 규칙
+# 6. 설치 규칙 및 ZMQ GUI 런처 자동 생성
 # -------------------------------------------------------------------
 install(TARGETS kfadc500_daq kfadc500_prod DESTINATION bin)
 
-# ==============================================================================
-# 💡 [PHASE 4] Advanced ZMQ GUI Dashboard Integration
-# ==============================================================================
 message(STATUS "[PHASE 4] Setting up Python ZMQ GUI Dashboard Environment...")
-
-# GUI 실행을 위한 통합 실행 쉘 스크립트 생성 (bin/kfadc500_mon)
 set(MONITOR_SCRIPT "${CMAKE_SOURCE_DIR}/bin/kfadc500_mon")
 file(WRITE ${MONITOR_SCRIPT} "#!/bin/bash\n")
 file(APPEND ${MONITOR_SCRIPT} "# KFADC500 Unified Monitoring Dashboard Launcher\n\n")
-
-# Python 모듈 임포트를 위해 PYTHONPATH 환경 변수를 동적으로 세팅
 file(APPEND ${MONITOR_SCRIPT} "export PYTHONPATH=\$PYTHONPATH:${CMAKE_SOURCE_DIR}/python/gui\n")
-
-# GUI 메인 엔트리 실행
 file(APPEND ${MONITOR_SCRIPT} "python3 ${CMAKE_SOURCE_DIR}/python/gui/main.py \"\$@\"\n")
-
-# 생성된 스크립트에 실행 권한 부여
 execute_process(COMMAND chmod +x ${MONITOR_SCRIPT})
-
 message(STATUS "[PHASE 4] GUI Launcher created: ${MONITOR_SCRIPT}")
