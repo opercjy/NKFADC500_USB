@@ -1,4 +1,15 @@
+# [ 1. Online DAQ & GUI Dashboard ]
 pyzmq>=24.0.0
 numpy>=1.21.0
 pyqtgraph>=0.13.0
 PySide6>=6.4.0
+
+# [ 2. Offline Physics Analysis (QA) ]
+uproot>=5.0.0
+awkward>=2.0.0
+matplotlib>=3.5.0
+mplhep>=0.3.26
+
+# [ 3. Hardware Control (Optional) ]
+# Uncomment the line below if you have installed the CAEN HV Wrapper Library (C/C++)
+# caen-libs>=1.0.0
