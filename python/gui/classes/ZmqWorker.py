@@ -4,7 +4,6 @@ import zmq
 from PySide6.QtCore import QThread, Signal, Slot
 
 class ZmqWorker(QThread):
-    # data_ready 시그널: (waveforms, charges, samples_per_ch, telemetry_dict)
     data_ready = Signal(object, object, int, dict) 
 
     def __init__(self):
@@ -16,7 +15,6 @@ class ZmqWorker(QThread):
         self.socket = None
         self.poller = None
 
-        # 새로운 패킷 규격: 헤더(24) + 파형(131072) + 전하량(64000) = 195096 bytes
         self.packet_size = 195096
         self.needs_clear = False
         self.baseline_hist = np.zeros((4, 150), dtype=np.int32)
@@ -53,13 +51,13 @@ class ZmqWorker(QThread):
                     if len(msg) != self.packet_size:
                         continue
 
-                    # 1. 헤더 추출 (Telemetry)
+                    # 1. 헤더 추출 (💡 SQLite BLOB 버그 방지를 위해 반드시 순수 파이썬 int로 캐스팅)
                     header = np.frombuffer(msg, dtype=np.uint32, count=6, offset=0)
-                    num_events = header[0]
-                    samples_per_ch = header[1]
-                    total_events = header[2]
-                    queue_size = header[3]
-                    pool_free_size = header[4]
+                    num_events = int(header[0])
+                    samples_per_ch = int(header[1])
+                    total_events = int(header[2])
+                    queue_size = int(header[3])
+                    pool_free_size = int(header[4])
 
                     current_time = time.time()
                     elapsed = current_time - self.last_telemetry_time
@@ -70,7 +68,7 @@ class ZmqWorker(QThread):
 
                     telemetry = {
                         'events': total_events,
-                        'rate': round(self.current_rate, 1),
+                        'rate': round(float(self.current_rate), 1),
                         'dataq': queue_size,
                         'pool': pool_free_size
                     }
@@ -79,11 +77,11 @@ class ZmqWorker(QThread):
                         self.data_ready.emit("TELEMETRY_ONLY", None, 0, telemetry)
                         continue
 
-                    # 2. 파형 추출 (offset 24 byte)
+                    # 2. 파형 추출 
                     waveforms_full = np.frombuffer(msg, dtype=np.float64, offset=24, count=4*4096).reshape((4, 4096))
                     valid_waveforms = waveforms_full[:, :samples_per_ch]
                     
-                    # 3. 전하량 추출 (offset 24 + 131072 = 131096 byte)
+                    # 3. 전하량 추출
                     charges_full = np.frombuffer(msg, dtype=np.float64, offset=131096, count=4*2000).reshape((4, 2000))
                     valid_charges = charges_full[:, :num_events]
                     

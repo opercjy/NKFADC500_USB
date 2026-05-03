@@ -35,12 +35,19 @@ class DatabaseTab(QWidget):
         for r, row in enumerate(daq_rows):
             self.tbl_daq.insertRow(r)
             for c, val in enumerate(row):
-                it = QTableWidgetItem(str(val)); it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                str_val = str(val)
+                it = QTableWidgetItem(str_val)
+                it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                # 💡 [UX 패치] 마우스 오버 시 텍스트가 짤리지 않고 전체가 팝업되도록 설정
+                it.setToolTip(str_val) 
                 self.tbl_daq.setItem(r, c, it)
                 
         prod_rows = self.db.get_prod_history()
         for r, row in enumerate(prod_rows):
             self.tbl_prod.insertRow(r)
             for c, val in enumerate(row):
-                it = QTableWidgetItem(str(val)); it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                str_val = str(val)
+                it = QTableWidgetItem(str_val)
+                it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                it.setToolTip(str_val)
                 self.tbl_prod.setItem(r, c, it)

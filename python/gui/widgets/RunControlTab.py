@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
 from PySide6.QtCore import QTimer
 
 class RunControlTab(QWidget):
+    # 💡 [핵심 패치] 생성자에서 get_hv_cb(HV 요약 긁어오는 함수)를 주입받습니다.
     def __init__(self, daq_manager, db_manager, dashboard, log_callback, get_hv_cb=None):
         super().__init__()
         self.daq = daq_manager
@@ -26,8 +27,6 @@ class RunControlTab(QWidget):
         self.init_ui()
         self.parse_config_and_update_dashboard()
         self.load_last_run_settings()
-        
-        # 💡 [핵심 패치] 하드웨어가 준비되었다는 신호를 받으면, 비로소 시간을 재기 시작합니다!
         self.daq.run_started.connect(self.on_actual_run_started)
 
     def init_ui(self):
@@ -115,7 +114,6 @@ class RunControlTab(QWidget):
         run_layout.addLayout(h_btns); run_layout.addStretch()
 
     def on_actual_run_started(self):
-        # 하드웨어 세팅(약 2~3초)이 끝난 후 이 함수가 불리면 그때 시간을 잽니다.
         self.start_time = datetime.now()
         self.dash.lbl_start.setText(f"Start: {self.start_time.strftime('%H:%M:%S')}")
         self.log_callback("<span style='color:#009688;'><b>[GUI] Synchronized Timer with Hardware Start.</b></span>")
@@ -214,7 +212,6 @@ class RunControlTab(QWidget):
         self.btn_start.setEnabled(False); self.btn_scan.setEnabled(False); self.btn_stop.setEnabled(True)
         self.dash.lbl_mode.setText(f"MODE: RUN [{self.current_subrun}/{self.max_subruns}]")
         
-        # 아직 셋업 단계이므로 타이머를 켜지 않습니다.
         self.start_time = None
         self.dash.lbl_start.setText("Start: Waiting for HW...")
         self.last_events = 0
@@ -273,8 +270,9 @@ class RunControlTab(QWidget):
             end_t = datetime.now()
             rate = float(self.dash.lbl_rate.text().replace("Rate: ", "").replace(" Hz", "")) if "Rate: " in self.dash.lbl_rate.text() else 0.0
             size = self.last_events * self.config_record_len * 512 / 1048576.0
-            
             clean_filename = self.dash.lbl_file.text().replace("File: ", "").strip()
+            
+            # 💡 [핵심 패치] HV 탭에서 값을 긁어와서 Config 문자열에 이어 붙임
             hv_info = self.get_hv_cb() if self.get_hv_cb else ""
             full_config_summary = f"{self.active_config_text} {hv_info}"
             

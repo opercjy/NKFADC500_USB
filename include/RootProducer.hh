@@ -7,18 +7,16 @@
 
 constexpr int MAX_MONITOR_EVENTS = 2000;
 
-// 💡 파이썬 GUI로 전송할 요약 패킷 (헤더 추가)
 struct LiveMonitorPacket {
-    // [ 메타데이터 텔레메트리 헤더 (24 Bytes) ]
-    uint32_t num_events;           // 패킷에 포함된 실제 이벤트 갯수
-    uint32_t samples_per_ch;       // 동적 RL 대응: 현재 채널당 샘플 수
-    uint32_t total_acquired_events;// 전체 누적 이벤트
-    uint32_t queue_size;           // 현재 큐 사이즈
-    uint32_t pool_free_size;       // 현재 풀 여유 사이즈
-    uint32_t padding;              // 64-bit alignment 패딩
+    uint32_t num_events;           
+    uint32_t samples_per_ch;       
+    uint32_t total_acquired_events;
+    uint32_t queue_size;           
+    uint32_t pool_free_size;       
+    uint32_t padding;              
 
-    double last_waveform[4][4096]; // 파형 데이터
-    double charge_array[4][MAX_MONITOR_EVENTS]; // 전하량 데이터
+    double last_waveform[4][4096]; 
+    double charge_array[4][MAX_MONITOR_EVENTS]; 
 };
 
 class RootProducer {
@@ -51,10 +49,16 @@ private:
     int preset_events_;
     long long total_bytes_processed_;
 
-    std::vector<uint16_t> raw_event_data_;
-    double pedestal_[4];
-    double charge_[4];
-    double peak_[4];
+    // 💡 [UX 개선] 배열 지양, ROOT TBrowser 친화적인 독립 벡터 (파형)
+    std::vector<double> wave_ch0_;
+    std::vector<double> wave_ch1_;
+    std::vector<double> wave_ch2_;
+    std::vector<double> wave_ch3_;
+
+    // 💡 [UX 개선] 배열 지양, ROOT TBrowser 친화적인 독립 변수 (페데스탈, 전하, 피크)
+    double ped_ch0_, ped_ch1_, ped_ch2_, ped_ch3_;
+    double charge_ch0_, charge_ch1_, charge_ch2_, charge_ch3_;
+    double peak_ch0_, peak_ch1_, peak_ch2_, peak_ch3_;
 
     LiveMonitorPacket current_packet_;
 };

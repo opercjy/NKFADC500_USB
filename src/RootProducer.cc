@@ -22,12 +22,28 @@ RootProducer::RootProducer(const std::string& input_file, const std::string& out
 
         tree_->Branch("event_id", &event_id_, "event_id/I");
         tree_->Branch("record_length", &record_length_, "record_length/I");
-        tree_->Branch("pedestal", pedestal_, "pedestal[4]/D");
-        tree_->Branch("charge", charge_, "charge[4]/D");
-        tree_->Branch("peak", peak_, "peak[4]/D");
+        
+        // 💡 [핵심 UX 개선] 물리 분석의 직관성을 위해 모든 변수를 채널별로 완전히 분리했습니다.
+        tree_->Branch("pedestal_ch0", &ped_ch0_, "pedestal_ch0/D");
+        tree_->Branch("pedestal_ch1", &ped_ch1_, "pedestal_ch1/D");
+        tree_->Branch("pedestal_ch2", &ped_ch2_, "pedestal_ch2/D");
+        tree_->Branch("pedestal_ch3", &ped_ch3_, "pedestal_ch3/D");
+
+        tree_->Branch("charge_ch0", &charge_ch0_, "charge_ch0/D");
+        tree_->Branch("charge_ch1", &charge_ch1_, "charge_ch1/D");
+        tree_->Branch("charge_ch2", &charge_ch2_, "charge_ch2/D");
+        tree_->Branch("charge_ch3", &charge_ch3_, "charge_ch3/D");
+
+        tree_->Branch("peak_ch0", &peak_ch0_, "peak_ch0/D");
+        tree_->Branch("peak_ch1", &peak_ch1_, "peak_ch1/D");
+        tree_->Branch("peak_ch2", &peak_ch2_, "peak_ch2/D");
+        tree_->Branch("peak_ch3", &peak_ch3_, "peak_ch3/D");
         
         if (save_waveform_) {
-            tree_->Branch("raw_event_data", &raw_event_data_); 
+            tree_->Branch("wave_ch0", &wave_ch0_);
+            tree_->Branch("wave_ch1", &wave_ch1_);
+            tree_->Branch("wave_ch2", &wave_ch2_);
+            tree_->Branch("wave_ch3", &wave_ch3_);
         }
     }
 }
@@ -41,11 +57,9 @@ RootProducer::~RootProducer() {
     }
 }
 
-// 💡 [핵심 패치] KFADC500의 헤더(32byte) 및 채널 교차(Interleaved) 구조 완벽 디코딩
 void RootProducer::ProcessOnlineEvent(const uint16_t* raw_event, int samples_per_ch) {
     if (current_packet_.num_events >= MAX_MONITOR_EVENTS) return;
 
-    // 바이트 포인터로 접근하여 헤더 및 교차 오프셋을 계산합니다.
     const uint8_t* evt_bytes = reinterpret_cast<const uint8_t*>(raw_event);
     current_packet_.samples_per_ch = samples_per_ch; 
 
@@ -60,7 +74,6 @@ void RootProducer::ProcessOnlineEvent(const uint16_t* raw_event, int samples_per
         int ped_end = std::min(PED_END, samples_per_ch);
         int num_ped = ped_end - ped_start;
         
-        // 💡 32Byte 헤더 이후, 샘플 인덱스(i) * 8바이트 + 채널(ch) * 2바이트
         for (int i = ped_start; i < ped_end; ++i) {
             uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2));
             ped += adc;
@@ -97,7 +110,7 @@ void RootProducer::ClearPacket() {
 }
 
 // ===========================================================================
-// 아래 오프라인 모드들 역시 교차 포맷을 정상적으로 읽어들일 수 있도록 수정되었습니다.
+// 대화형 디스플레이 모드 (오프라인 뷰어)
 // ===========================================================================
 void RootProducer::RunDisplayMode(std::atomic<bool>& is_running) {
     std::ifstream infile(in_filename_, std::ios::binary);
@@ -114,7 +127,7 @@ void RootProducer::RunDisplayMode(std::atomic<bool>& is_running) {
     int total_events = (file_size - 8) / event_size_bytes; 
     if (total_events <= 0) return;
 
-    raw_event_data_.resize(event_size_bytes / 2);
+    std::vector<uint8_t> raw_buffer(event_size_bytes);
 
     const int SKIP_BINS = 20; 
     const int PED_START = 22;
@@ -137,26 +150,27 @@ void RootProducer::RunDisplayMode(std::atomic<bool>& is_running) {
         if (current_id >= total_events) current_id = total_events - 1;
 
         infile.seekg(8 + (long long)current_id * event_size_bytes, std::ios::beg);
-        infile.read(reinterpret_cast<char*>(raw_event_data_.data()), event_size_bytes);
+        infile.read(reinterpret_cast<char*>(raw_buffer.data()), event_size_bytes);
         
-        const uint8_t* evt_bytes = reinterpret_cast<const uint8_t*>(raw_event_data_.data());
+        const uint8_t* evt_bytes = raw_buffer.data();
 
-        for (int ch = 0; ch < 4; ++ch) { pedestal_[ch] = 0; h_wave[ch]->Reset(); }
+        for (int ch = 0; ch < 4; ++ch) { h_wave[ch]->Reset(); }
 
         for (int ch = 0; ch < 4; ++ch) {
+            double ch_pedestal = 0.0;
             int ped_start = std::min(PED_START, samples_per_ch);
             int ped_end = std::min(PED_END, samples_per_ch);
             int num_ped = ped_end - ped_start;
             
             for (int i = ped_start; i < ped_end; ++i) {
                 uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2);
-                pedestal_[ch] += adc;
+                ch_pedestal += adc;
             }
-            if (num_ped > 0) pedestal_[ch] /= num_ped;
+            if (num_ped > 0) ch_pedestal /= num_ped;
 
             for (int i = SKIP_BINS; i < samples_per_ch; ++i) {
                 uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2);
-                double inverted_adc = pedestal_[ch] - adc;
+                double inverted_adc = ch_pedestal - adc;
                 h_wave[ch]->SetBinContent(i + 1, inverted_adc); 
             }
         }
@@ -183,6 +197,9 @@ void RootProducer::RunDisplayMode(std::atomic<bool>& is_running) {
     delete c1;
 }
 
+// ===========================================================================
+// 물리 TTree 변환 모드 (Batch Mode)
+// ===========================================================================
 void RootProducer::RunBatchMode(std::atomic<bool>& is_running) {
     std::ifstream infile(in_filename_, std::ios::binary);
     if (!infile.is_open()) return;
@@ -194,7 +211,7 @@ void RootProducer::RunBatchMode(std::atomic<bool>& is_running) {
     if (event_size_bytes <= 0) return;
 
     int samples_per_ch = (event_size_bytes - 32) / 8;
-    raw_event_data_.resize(event_size_bytes / 2); // Raw 버퍼는 전체 유지
+    std::vector<uint8_t> raw_buffer(event_size_bytes);
 
     const int SKIP_BINS = 20; 
     const int PED_START = 22;
@@ -204,34 +221,62 @@ void RootProducer::RunBatchMode(std::atomic<bool>& is_running) {
     event_id_ = 0;
 
     while (is_running.load()) {
-        infile.read(reinterpret_cast<char*>(raw_event_data_.data()), event_size_bytes);
+        infile.read(reinterpret_cast<char*>(raw_buffer.data()), event_size_bytes);
         int bytes_read = infile.gcount();
         if (bytes_read < event_size_bytes) break;
         
         total_bytes_processed_ += bytes_read;
-        const uint8_t* evt_bytes = reinterpret_cast<const uint8_t*>(raw_event_data_.data());
+        const uint8_t* evt_bytes = raw_buffer.data();
 
-        for (int ch = 0; ch < 4; ++ch) {
-            pedestal_[ch] = 0; charge_[ch] = 0; peak_[ch] = -9999;
+        if (save_waveform_) {
+            wave_ch0_.clear(); wave_ch0_.reserve(samples_per_ch);
+            wave_ch1_.clear(); wave_ch1_.reserve(samples_per_ch);
+            wave_ch2_.clear(); wave_ch2_.reserve(samples_per_ch);
+            wave_ch3_.clear(); wave_ch3_.reserve(samples_per_ch);
         }
 
+        // 변수 초기화
+        ped_ch0_ = 0; ped_ch1_ = 0; ped_ch2_ = 0; ped_ch3_ = 0;
+        charge_ch0_ = 0; charge_ch1_ = 0; charge_ch2_ = 0; charge_ch3_ = 0;
+        peak_ch0_ = -9999; peak_ch1_ = -9999; peak_ch2_ = -9999; peak_ch3_ = -9999;
+
         for (int ch = 0; ch < 4; ++ch) {
+            double current_ped = 0.0;
             int ped_start = std::min(PED_START, samples_per_ch);
             int ped_end = std::min(PED_END, samples_per_ch);
             int num_ped = ped_end - ped_start;
             
             for (int i = ped_start; i < ped_end; ++i) {
                 uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2);
-                pedestal_[ch] += adc;
+                current_ped += adc;
             }
-            if (num_ped > 0) pedestal_[ch] /= num_ped;
+            if (num_ped > 0) current_ped /= num_ped;
 
-            for (int i = SKIP_BINS; i < samples_per_ch; ++i) {
+            double current_charge = 0.0;
+            double current_peak = -9999.0;
+
+            for (int i = 0; i < samples_per_ch; ++i) {
                 uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2);
-                double inverted_adc = pedestal_[ch] - adc;
-                charge_[ch] += inverted_adc;
-                if (inverted_adc > peak_[ch]) peak_[ch] = inverted_adc;
+                double inverted_adc = current_ped - adc;
+
+                if (i >= SKIP_BINS) {
+                    current_charge += inverted_adc;
+                    if (inverted_adc > current_peak) current_peak = inverted_adc;
+                }
+
+                if (save_waveform_) {
+                    if (ch == 0) wave_ch0_.push_back(inverted_adc);
+                    else if (ch == 1) wave_ch1_.push_back(inverted_adc);
+                    else if (ch == 2) wave_ch2_.push_back(inverted_adc);
+                    else if (ch == 3) wave_ch3_.push_back(inverted_adc);
+                }
             }
+
+            // 개별 변수에 값 맵핑
+            if (ch == 0) { ped_ch0_ = current_ped; charge_ch0_ = current_charge; peak_ch0_ = current_peak; }
+            else if (ch == 1) { ped_ch1_ = current_ped; charge_ch1_ = current_charge; peak_ch1_ = current_peak; }
+            else if (ch == 2) { ped_ch2_ = current_ped; charge_ch2_ = current_charge; peak_ch2_ = current_peak; }
+            else if (ch == 3) { ped_ch3_ = current_ped; charge_ch3_ = current_charge; peak_ch3_ = current_peak; }
         }
 
         tree_->Fill();
