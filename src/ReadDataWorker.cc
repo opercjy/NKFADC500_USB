@@ -137,7 +137,8 @@ void ReadDataWorker::ReadLoop() {
                             mon_ev->payload.charge_array[ch][idx] = ch_charge;
                         }
                         mon_ev->payload.num_events++;
-                        total_events_.fetch_add(1, std::order_relaxed);
+                        // 💡 [오타 수정 완료] std::memory_order_relaxed 로 정상화
+                        total_events_.fetch_add(1, std::memory_order_relaxed);
                     }
                     offset += event_size;
                 }
