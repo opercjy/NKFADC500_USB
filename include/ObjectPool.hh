@@ -21,9 +21,6 @@ constexpr std::size_t CACHE_LINE_SIZE = 64;
 constexpr std::size_t BULK_READ_SIZE = 1048576; // 1MB USB Bulk
 constexpr std::size_t MAX_MONITOR_EVENTS = 2000;
 
-// =========================================================
-// 💡 [버그 수정] 파이썬이 기대하는 정확히 195,096 바이트 패킷 
-// =========================================================
 #pragma pack(push, 1) // 패딩 바이트 강제 제거
 struct LiveMonitorPacket {
     uint32_t num_events;           
@@ -37,21 +34,20 @@ struct LiveMonitorPacket {
 };
 #pragma pack(pop)
 
-// 1. Raw USB Bulk 데이터 구조체
+// =========================================================
+// 1. Raw USB Bulk 데이터 구조체 (수정됨)
+// =========================================================
 struct alignas(CACHE_LINE_SIZE) DataBlock {
-    alignas(CACHE_LINE_SIZE) std::atomic<int> ref_count{0};
+    // 💡 [버그 수정] Bulk 데이터는 ReadDataWorker 단독 사용이므로 참조 카운팅 불필요
     std::size_t valid_size{0};
     uint8_t data[BULK_READ_SIZE];
-
-    inline void Retain(int count) { ref_count.store(count, std::memory_order_relaxed); }
-    inline bool Release() { return ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1; }
 };
 
-// 2. 모니터링 래퍼 구조체
+// =========================================================
+// 2. 모니터링 래퍼 구조체 
+// =========================================================
 struct alignas(CACHE_LINE_SIZE) EventBlock {
     alignas(CACHE_LINE_SIZE) std::atomic<int> ref_count{0};
-    
-    // ZMQ로 보낼 실제 순수 페이로드 (195096 Bytes 고정)
     LiveMonitorPacket payload;
 
     inline void Retain(int count) { ref_count.store(count, std::memory_order_relaxed); }
@@ -59,7 +55,9 @@ struct alignas(CACHE_LINE_SIZE) EventBlock {
     inline void Clear() { payload.num_events = 0; }
 };
 
-// 3. Lock-Free Pipeline (Root 큐 제거, ZMQ 전용)
+// =========================================================
+// 3. Lock-Free Pipeline
+// =========================================================
 class LockFreePipeline {
 public:
     static constexpr std::size_t BULK_POOL_SIZE = 256;  
@@ -70,11 +68,15 @@ public:
         for (std::size_t i = 0; i < EVENT_POOL_SIZE; ++i) event_free_queue_.bounded_push(&event_pool_[i]);
     }
 
+    // 💡 [버그 수정] 조건 검사 없이 valid_size 초기화 후 즉각 반환 보장
     inline DataBlock* AcquireFreeBulk() {
         DataBlock* block = nullptr; bulk_free_queue_.pop(block); return block;
     }
     inline void ReturnToFreeBulk(DataBlock* block) {
-        if (block && block->Release()) { block->valid_size = 0; while (!bulk_free_queue_.bounded_push(block)) CPU_RELAX(); }
+        if (block) { 
+            block->valid_size = 0; 
+            while (!bulk_free_queue_.bounded_push(block)) CPU_RELAX(); 
+        }
     }
 
     inline EventBlock* AcquireFreeEvent() {
