@@ -1,4 +1,5 @@
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QPlainTextEdit, QFileDialog
+from PySide6.QtCore import QSettings
 from PySide6.QtGui import QFont
 
 class ConfigTab(QWidget):
@@ -6,13 +7,19 @@ class ConfigTab(QWidget):
         super().__init__()
         self.log_callback = log_callback
         self.update_callback = update_callback
+        
+        # 💡 [영속성 패치] 
+        self.settings = QSettings("NoticeKorea", "KFADC500_GUI")
         self.init_ui()
 
     def init_ui(self):
         cfg_layout = QVBoxLayout(self)
         btn_h = QHBoxLayout()
         btn_h.addWidget(QLabel("Editing Config:"))
-        self.in_cfg_edit = QLineEdit("config/kfadc500.config")
+        
+        # 💡 [영속성 패치] 
+        saved_edit_cfg = self.settings.value("edit_config_file", "config/kfadc500.config")
+        self.in_cfg_edit = QLineEdit(saved_edit_cfg)
         
         btn_cfg_edit_browse = QPushButton("Browse")
         btn_cfg_edit_browse.clicked.connect(self.browse_config_edit)
@@ -35,6 +42,7 @@ class ConfigTab(QWidget):
         f, _ = QFileDialog.getOpenFileName(self, "Select Config to Edit", "config", "Config Files (*.config *.cfg);;All Files (*)")
         if f: 
             self.in_cfg_edit.setText(f)
+            self.settings.setValue("edit_config_file", f)
             self.load_config()
 
     def load_config(self):
@@ -48,6 +56,7 @@ class ConfigTab(QWidget):
         try:
             with open(self.in_cfg_edit.text(), "w") as f:
                 f.write(self.cfg_editor.toPlainText())
+            self.settings.setValue("edit_config_file", self.in_cfg_edit.text())
             self.log_callback("<span style='color:#388E3C;'><b>[GUI] Configuration saved successfully.</b></span>")
             self.update_callback()
         except Exception as e:
