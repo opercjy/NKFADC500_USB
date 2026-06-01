@@ -66,14 +66,14 @@ void ReadDataWorker::ReadLoop() {
 
     while (is_running_.load(std::memory_order_acquire)) {
         
-        // 1. 외부 강제 종료 시그널(Ctrl+C 또는 GUI Stop) 처리
+        // 1. 외부 강제 종료 시그널 감지 시 즉시 H/W 래치 잠금
         if (!g_app_running.load(std::memory_order_acquire) && !stop_issued) {
             std::cout << "\n\033[1;33m[DAQ:INFO] Stop signal received. Halting hardware trigger safely...\033[0m\n";
             KFADC500stop(sid_);
             stop_issued = true;
         }
 
-        // 2. 프리셋 목표 달성 처리
+        // 2. 프리셋 목표 달성 검증
         if (!stop_issued) {
             if (preset_events_ > 0 && total_events_.load(std::memory_order_relaxed) >= preset_events_) {
                 KFADC500stop(sid_);
@@ -89,7 +89,7 @@ void ReadDataWorker::ReadLoop() {
 
         int bcount = KFADC500read_BCOUNT(sid_);
         
-        // 💡 [핵심 패치 4] 하드웨어 FIFO에 데이터가 있다면 무조건 다 퍼내야 루프를 탈출할 수 있음
+        // 하드웨어에 16KB 이상의 데이터가 찼을 때만 Bulk Read 수행
         if (bcount >= read_kbytes) {
             DataBlock* bulk = g_pipeline.AcquireFreeBulk();
             if (bulk) {
@@ -144,14 +144,15 @@ void ReadDataWorker::ReadLoop() {
                 if (offset > 0) residual_buffer_.erase(residual_buffer_.begin(), residual_buffer_.begin() + offset);
             }
         } else {
-            // 더 이상 읽어올 16KB 블록이 없고, 정지 명령도 내려졌다면
+            // 정지 명령이 내려졌고 더 이상 읽어올 16KB 블록이 없다면 루프 탈출
             if (stop_issued) {
                 std::cout << "[DAQ:INFO] Hardware FIFO drained completely.\n";
-                break; // 💡 비로소 루프를 안전하게 탈출합니다.
+                break; 
             }
             CPU_RELAX();
         }
 
+        // ZMQ 모니터링 주기적(100ms) 전송 로직
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_zmq_time).count() >= 100) {
             if (!mon_ev) {
@@ -174,6 +175,6 @@ void ReadDataWorker::ReadLoop() {
     if (mon_ev) g_pipeline.ReturnToFreeEvent(mon_ev); 
     fout.close();
 
-    // 💡 스스로를 종료 상태로 전환하여 main.cc의 무한 대기를 풀어줌
+    // 💡 [치명적 오타 수정] std::memory_order_release 로 정상화 완료
     is_running_.store(false, std::memory_order_release);
 }
