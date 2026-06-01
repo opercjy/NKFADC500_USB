@@ -9,7 +9,6 @@
 #include <unistd.h>
 #include <filesystem>
 
-// 💡 [핵심 패치 1] libusb 헤더 및 벤더의 숨겨진 하위 레벨 API 강제 노출
 #include <libusb.h>
 extern "C" {
 #include "NoticeKFADC500USB.h"
@@ -87,43 +86,30 @@ int main(int argc, char** argv) {
     if (g_app_running.load()) {
         KFADC500open(sid);
 
-        // =========================================================================
-        // 💡 [핵심 패치 2] 제1원리적 상태 소독 (State Sanitization) 시퀀스
-        // 막혀있는 Bulk 파이프를 우회하여 Control Endpoint(EP0)로 칩셋을 직접 강타합니다.
-        // =========================================================================
         std::cout << "\033[1;33m[SYSTEM:INFO] Executing Deep Hardware Sanitization (EP0 Control)...\033[0m\n";
-        
         libusb_device_handle* devh = nkusb_get_device_handle(sid);
         if (devh) {
-            // 1. OS 레벨 USB 파이프 Halted 상태 초기화
-            libusb_clear_halt(devh, 0x06); // EP6 Bulk OUT
-            libusb_clear_halt(devh, 0x82); // EP2 Bulk IN
+            libusb_clear_halt(devh, 0x06); 
+            libusb_clear_halt(devh, 0x82); 
         }
 
-        // 2. 하드웨어(FX3/FPGA) 레벨 FIFO 및 엔드포인트 강제 리셋 (Bulk 파이프 우회)
         unsigned char dummy = 0;
-        USB3WriteControl(sid, 0xE2, 0, 0, &dummy, 0); // Reset EP2 (0xE2)
-        USB3WriteControl(sid, 0xE6, 0, 0, &dummy, 0); // Reset EP6 (0xE6)
-        USB3WriteControl(sid, 0xD7, 0, 0, &dummy, 0); // Reset FIFO (0xD7)
+        USB3WriteControl(sid, 0xE2, 0, 0, &dummy, 0); 
+        USB3WriteControl(sid, 0xE6, 0, 0, &dummy, 0); 
+        USB3WriteControl(sid, 0xD7, 0, 0, &dummy, 0); 
         
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-        // 3. 잔여 쓰레기 데이터 완벽히 Drain (비우기)
         if (devh) {
             int transferred = 0;
             unsigned char garbage[16384];
-            // 10ms 타임아웃으로 읽히는 데이터가 전혀 없을 때까지 무한정 뽑아내어 파이프라인 개통
-            while (libusb_bulk_transfer(devh, 0x82, garbage, sizeof(garbage), &transferred, 10) == 0) {
-                // Garbage collection loop
-            }
+            while (libusb_bulk_transfer(devh, 0x82, garbage, sizeof(garbage), &transferred, 10) == 0) {}
         }
 
-        // 4. 깨끗해진 Bulk 파이프를 통해 정상적인 Stop 및 Reset 명령 인가
         KFADC500stop(sid); 
         KFADC500reset(sid);   
         std::this_thread::sleep_for(std::chrono::milliseconds(200)); 
         std::cout << "\033[1;32m[SYSTEM:INFO] Hardware Sanitization Complete.\033[0m\n";
-        // =========================================================================
 
         KFADC500write_RM(sid, 1, 1, 0, 0);
         KFADC500reset(sid);
@@ -168,19 +154,19 @@ int main(int argc, char** argv) {
         for (int ch = 1; ch <= 4; ++ch) {
             std::cout << "[DAQ:INFO] CH" << ch << " Settled Pedestal: " << KFADC500read_PED(sid, ch) << "\n";
         }
-        std::cout << "\033[1;33m[SYSTEM:INFO] Flushing initial pipelines...\033[0m\n";
-        KFADC500close(sid);
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        // 💡 [핵심 버그 패치] 커널의 USB 핸들을 망가뜨리던 Mid-close 및 Open 로직을 완전히 제거했습니다.
+        std::cout << "\033[1;33m[SYSTEM:INFO] Initial pipelines settled.\033[0m\n";
     }
 
     if (!g_app_running.load()) {
         std::cout << "\n\033[1;31m[SYSTEM:WARN] DAQ Initialization Aborted. Exiting safely...\033[0m\n";
+        // 💡 [핵심 버그 패치] 초기화 도중 종료 시에도 무조건 리소스를 닫고 나감!
+        KFADC500close(sid);
         USB3Exit();
         return 0;
     }
 
     std::cout << "\n\033[1;32m>>> STARTING PARALLEL RUN PHASE <<<\033[0m\n";
-    KFADC500open(sid); 
     KFADC500reset(sid); 
 
     g_system_running.store(true, std::memory_order_release);
@@ -196,18 +182,14 @@ int main(int argc, char** argv) {
 
     auto timer_start = std::chrono::steady_clock::now();
 
-    while (g_app_running.load(std::memory_order_acquire) && usb_worker.IsRunning()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // 💡 [핵심 버그 패치] 메인 스레드는 g_app_running 플래그에 상관없이 워커가 "스스로 배수를 마치고 종료할 때까지" 무조건 기다립니다.
+    while (usb_worker.IsRunning()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    std::cout << "\n\033[1;33m[SYSTEM:INFO] Stopping Hardware Trigger (Draining FIFO)...\033[0m\n";
-    KFADC500stop(sid);
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-    std::cout << "[SYSTEM:INFO] Initiating Graceful Shutdown for Lock-Free Pipelines...\n";
+    std::cout << "[SYSTEM:INFO] Worker drained successfully. Shutting down Lock-Free Pipelines...\n";
     g_system_running.store(false, std::memory_order_release);
     
-    usb_worker.Stop();
     zmq_pub.Stop();
 
     auto timer_end = std::chrono::steady_clock::now();
@@ -226,6 +208,7 @@ int main(int argc, char** argv) {
     std::cout << " RAW File Saved to  : \033[1;36m" << out_file << "\033[0m\n";
     std::cout << "\033[1;32m=====================================================\033[0m\n";
 
+    // 💡 [핵심 버그 패치] 워커가 안전하게 종료된 것을 확인한 뒤에만 장치를 닫음. (Zombie 생성 불가)
     KFADC500close(sid);
     USB3Exit();
 
