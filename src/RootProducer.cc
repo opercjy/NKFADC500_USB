@@ -1,5 +1,4 @@
 #include "RootProducer.hh"
-#include "ObjectPool.hh"
 #include <iostream>
 #include <fstream>
 #include <algorithm>
@@ -8,10 +7,6 @@
 #include <TCanvas.h>
 #include <TH1D.h>
 #include <cstring> 
-
-// 글로벌 락프리 파이프라인 참조
-extern LockFreePipeline g_pipeline;
-extern std::atomic<bool> g_system_running;
 
 RootProducer::RootProducer(const std::string& input_file, const std::string& output_file, bool save_waveform, bool display_mode)
     : in_filename_(input_file), out_filename_(output_file), 
@@ -59,56 +54,6 @@ RootProducer::~RootProducer() {
     }
 }
 
-// ===========================================================================
-// [신규] 락프리 온라인 데이터 수집 모드 (Zero-Copy)
-// ===========================================================================
-void RootProducer::RunOnlineMode() {
-    // 디스크 I/O 병목 방지를 위한 대용량 AutoSave 설정 (약 100MB)
-    if (tree_) tree_->SetAutoSave(104857600); 
-
-    while (g_system_running.load(std::memory_order_acquire)) {
-        
-        // 1. Ready 큐에서 이벤트 블록 획득 (Mutex 락 대기 없음)
-        EventBlock* ev = g_pipeline.AcquireForRoot();
-        if (!ev) {
-            CPU_RELAX(); // 큐가 비어있으면 초경량 스핀
-            continue;
-        }
-
-        // 2. ROOT Tree 변수 바인딩
-        event_id_ = ev->total_acquired_events;
-        record_length_ = ev->samples_per_ch * 8 + 32;
-
-        if (ev->samples_per_ch > 0) {
-            // ReadDataWorker가 연산해둔 전하량 데이터를 그대로 매핑
-            charge_ch0_ = ev->charge_array[0][0];
-            charge_ch1_ = ev->charge_array[1][0];
-            charge_ch2_ = ev->charge_array[2][0];
-            charge_ch3_ = ev->charge_array[3][0];
-            
-            // 온라인 모드에서는 연산 오버헤드 최소화를 위해 peak/pedestal을 간소화 (또는 필요시 ReadDataWorker에서 계산 추가)
-            peak_ch0_ = peak_ch1_ = peak_ch2_ = peak_ch3_ = 0.0;
-            ped_ch0_ = ped_ch1_ = ped_ch2_ = ped_ch3_ = 0.0;
-
-            if (save_waveform_) {
-                // std::vector 내부 할당자만 사용하여 고속 복사
-                wave_ch0_.assign(ev->last_waveform[0], ev->last_waveform[0] + ev->samples_per_ch);
-                wave_ch1_.assign(ev->last_waveform[1], ev->last_waveform[1] + ev->samples_per_ch);
-                wave_ch2_.assign(ev->last_waveform[2], ev->last_waveform[2] + ev->samples_per_ch);
-                wave_ch3_.assign(ev->last_waveform[3], ev->last_waveform[3] + ev->samples_per_ch);
-            }
-
-            tree_->Fill();
-        }
-
-        // 3. 소유권 반환 (마지막 컨슈머라면 Free 큐로 환원)
-        g_pipeline.ReturnToFreeEvent(ev);
-    }
-}
-
-// ===========================================================================
-// 대화형 디스플레이 모드 (오프라인 뷰어 - 기존 로직 100% 보존)
-// ===========================================================================
 void RootProducer::RunDisplayMode(std::atomic<bool>& is_running) {
     std::ifstream infile(in_filename_, std::ios::binary);
     if (!infile.is_open()) return;
@@ -194,9 +139,6 @@ void RootProducer::RunDisplayMode(std::atomic<bool>& is_running) {
     delete c1;
 }
 
-// ===========================================================================
-// 물리 TTree 변환 모드 (Batch Mode - 기존 로직 100% 보존)
-// ===========================================================================
 void RootProducer::RunBatchMode(std::atomic<bool>& is_running) {
     std::ifstream infile(in_filename_, std::ios::binary);
     if (!infile.is_open()) return;
