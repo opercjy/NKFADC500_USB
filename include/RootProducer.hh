@@ -10,10 +10,7 @@ public:
     RootProducer(const std::string& input_file, const std::string& output_file, bool save_waveform, bool display_mode);
     ~RootProducer();
 
-    // 💡 [Lock-Free Online] 생산자가 큐에 넣어준 EventBlock을 꺼내어 TTree에 고속 직렬화하는 루프
-    void RunOnlineMode();
-
-    // [Offline] 기존의 프로덕션 및 디스플레이 모드는 원형 그대로 보존
+    // 💡 [패치] 잔여 온라인 함수 완전히 제거, 오직 오프라인 기능만 수행
     void RunBatchMode(std::atomic<bool>& is_running);
     void RunDisplayMode(std::atomic<bool>& is_running);
 
@@ -34,7 +31,6 @@ private:
     int preset_events_;
     long long total_bytes_processed_;
 
-    // ROOT TTree 바인딩용 독립 변수
     std::vector<double> wave_ch0_, wave_ch1_, wave_ch2_, wave_ch3_;
     double ped_ch0_, ped_ch1_, ped_ch2_, ped_ch3_;
     double charge_ch0_, charge_ch1_, charge_ch2_, charge_ch3_;
