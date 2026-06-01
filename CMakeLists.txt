@@ -27,6 +27,10 @@ pkg_check_modules(LIBUSB REQUIRED libusb-1.0)
 pkg_check_modules(ZMQ REQUIRED libzmq)
 find_package(Threads REQUIRED)
 
+# [추가] Boost 라이브러리 탐색 (헤더 전용이므로 컴포넌트 생략)
+find_package(Boost REQUIRED)
+include_directories(${Boost_INCLUDE_DIRS})
+
 # CERN ROOT 프레임워크 탐색
 find_package(ROOT REQUIRED COMPONENTS Core Tree RIO)
 # 💡 [위치 수정] ROOT 환경 설정을 글로벌로 끌어올림
