@@ -1,112 +1,113 @@
 #pragma once
+
 #include <vector>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
 #include <atomic>
 #include <cstdint>
+#include <cstddef>
+#include <boost/lockfree/spsc_queue.hpp>
+#include <boost/lockfree/queue.hpp>
 
-// 💡 하드웨어 USB 고속 전송을 위한 1MB 단위 블록 및 정렬 상수
-constexpr size_t BULK_READ_SIZE = 1048576; 
-constexpr size_t EVENT_ALIGNMENT = 512;    
+// 플랫폼 맞춤형 하드웨어 레벨 경량 백오프 (OS 개입 없는 스핀 대기)
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
+    #include <immintrin.h>
+    #define CPU_RELAX() _mm_pause()
+#elif defined(__aarch64__) || defined(__arm__)
+    #define CPU_RELAX() __asm__ volatile("yield" ::: "memory")
+#else
+    #include <thread>
+    #define CPU_RELAX() std::this_thread::yield()
+#endif
 
-class ObjectPool; 
+constexpr std::size_t CACHE_LINE_SIZE = 64;
 
-// 💡 1MB 데이터를 담는 껍데기 (Zero-Copy 직결용)
-struct DataBlock {
-    uint8_t data[BULK_READ_SIZE];
-    size_t valid_size;
-    ObjectPool* origin_pool; 
+// 1. 이벤트 구조체 (False Sharing 원천 차단)
+struct alignas(CACHE_LINE_SIZE) Event {
+    // 라이프사이클 관리용 참조 카운터.
+    // ZMQ 컨슈머가 ref_count를 깎을 때, ROOT 컨슈머가 payload를 읽는 캐시가 무효화되지 않도록 독자적 캐시 라인에 격리.
+    alignas(CACHE_LINE_SIZE) std::atomic<int> ref_count{0};
+    
+    // 메타데이터
+    uint64_t timestamp{0};
+    uint32_t trigger_number{0};
+    std::size_t data_size{0};
+    
+    // 동적 할당을 없애기 위한 하드웨어 최대 지원 샘플 사이즈의 정적 배열
+    static constexpr std::size_t MAX_SAMPLES = 4096;
+    alignas(CACHE_LINE_SIZE) uint16_t adc_data[MAX_SAMPLES];
+
+    inline void Retain(int count) {
+        ref_count.store(count, std::memory_order_relaxed);
+    }
+
+    // 자신이 마지막 소유자라면 true 반환
+    inline bool Release() {
+        // memory_order_acq_rel를 통해 다른 코어의 메모리 읽기/쓰기 가시성을 완벽 보장
+        return ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1;
+    }
 };
 
-// =========================================================
-// 메모리 할당/해제 부하를 없애는 Object Pool
-// =========================================================
-class ObjectPool {
+class LockFreePipeline {
 public:
-    ObjectPool(size_t pool_size) {
-        for (size_t i = 0; i < pool_size; i++) {
-            DataBlock* block = new DataBlock();
-            block->origin_pool = this;
-            block->valid_size = 0;
-            free_queue_.push(block);
-            all_blocks_.push_back(block); // 메모리 누수 방지용 추적 벡터
+    static constexpr std::size_t POOL_SIZE = 8192; // 2의 거듭제곱(Lock-free 비트마스킹 최적화)
+
+    LockFreePipeline() : pool_(POOL_SIZE) {
+        // [Zero-Allocation] 기동 시 1회 정적 할당된 주소들을 Free 큐에 삽입
+        for (std::size_t i = 0; i < POOL_SIZE; ++i) {
+            free_queue_.bounded_push(&pool_[i]);
         }
     }
 
-    ~ObjectPool() {
-        for (auto block : all_blocks_) delete block;
+    LockFreePipeline(const LockFreePipeline&) = delete;
+    LockFreePipeline& operator=(const LockFreePipeline&) = delete;
+
+    // ================= [ Producer API ] =================
+    inline Event* AcquireFree() {
+        Event* ev = nullptr;
+        free_queue_.pop(ev); // 대기열 고갈 시 즉각 nullptr 반환 (Wait-free)
+        return ev; 
     }
 
-    DataBlock* Acquire(std::atomic<bool>& is_running) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cond_.wait(lock, [this, &is_running] { return !free_queue_.empty() || !is_running.load(); });
-        if (!is_running.load() && free_queue_.empty()) return nullptr;
-        
-        DataBlock* block = free_queue_.front();
-        free_queue_.pop();
-        return block;
+    inline void PushToRoot(Event* ev) {
+        // [Backpressure] 소비자 큐가 꽉 찼으면 데드락 방지 및 컨텍스트 스위칭 없는 Spin-wait
+        while (!root_queue_.push(ev)) { CPU_RELAX(); }
     }
 
-    void Release(DataBlock* block) {
-        if (!block) return;
-        std::lock_guard<std::mutex> lock(mutex_);
-        block->valid_size = 0;
-        free_queue_.push(block);
-        cond_.notify_one();
+    inline void PushToZmq(Event* ev) {
+        while (!zmq_queue_.push(ev)) { CPU_RELAX(); }
     }
 
-    void WakeUpAll() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        cond_.notify_all();
+    // ================= [ Consumer API ] =================
+    inline Event* AcquireForRoot() {
+        Event* ev = nullptr;
+        root_queue_.pop(ev);
+        return ev;
     }
 
-    // 💡 (신규 추가) 터미널 UI 모니터링을 위한 잔여 여유 풀 사이즈 반환
-    size_t FreeSize() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return free_queue_.size();
+    inline Event* AcquireForZmq() {
+        Event* ev = nullptr;
+        zmq_queue_.pop(ev);
+        return ev;
     }
 
-private:
-    std::queue<DataBlock*> free_queue_;
-    std::vector<DataBlock*> all_blocks_;
-    std::mutex mutex_;
-    std::condition_variable cond_;
-};
-
-// =========================================================
-// 스레드 간 데이터 전달을 위한 안전한 Queue
-// =========================================================
-class DataQueue {
-public:
-    void Push(DataBlock* block) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        queue_.push(block);
-        cond_.notify_one();
-    }
-
-    DataBlock* Pop(std::atomic<bool>& is_running) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cond_.wait(lock, [this, &is_running] { return !queue_.empty() || !is_running.load(); });
-        if (!is_running.load() && queue_.empty()) return nullptr;
-        
-        DataBlock* block = queue_.front();
-        queue_.pop();
-        return block;
-    }
-
-    size_t Size() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return queue_.size();
-    }
-
-    void WakeUpAll() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        cond_.notify_all();
+    inline void ReturnToFree(Event* ev) {
+        if (ev->Release()) {
+            // 소유권이 완전히 소멸된 마지막 컨슈머가 Free 큐로 환원
+            while (!free_queue_.bounded_push(ev)) { CPU_RELAX(); }
+        }
     }
 
 private:
-    std::queue<DataBlock*> queue_;
-    std::mutex mutex_;
-    std::condition_variable cond_;
+    std::vector<Event> pool_;
+
+    // [MPMC Queue] 다수 소비자(Root, Zmq)가 빈 버퍼 반환, 1 생산자 획득
+    // bounded_push 사용 시 내부 노드 할당 없음
+    boost::lockfree::queue<Event*, boost::lockfree::capacity<POOL_SIZE>> free_queue_;
+
+    // [SPSC Queue] 단일 생산자 -> 단일 소비자 파이프라인 (극한의 Lock-Free 성능)
+    boost::lockfree::spsc_queue<Event*, boost::lockfree::capacity<POOL_SIZE>> root_queue_;
+    boost::lockfree::spsc_queue<Event*, boost::lockfree::capacity<POOL_SIZE>> zmq_queue_;
 };
+
+// Global Pipeline Instance 선언
+extern LockFreePipeline g_pipeline;
+extern std::atomic<bool> g_system_running;
