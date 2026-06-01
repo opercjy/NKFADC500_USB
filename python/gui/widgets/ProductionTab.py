@@ -19,7 +19,8 @@ class ProductionTab(QWidget):
         self.prod_manager.process_finished.connect(self.on_prod_finished)
 
         self.prod_start_time = None
-        self.prod_summary_cache = {} # 💡 청크 분할 대비 지표 캐싱 보관함
+        self.prod_summary_cache = {} 
+        self.current_total_events = 0 # 진행률 추적을 위한 변수
         self.init_ui()
 
     def init_ui(self):
@@ -96,7 +97,9 @@ class ProductionTab(QWidget):
         self.btn_batch_run.setEnabled(False)
         self.btn_batch_stop.setEnabled(True)
         self.prod_progress.setValue(0)
-        self.prod_summary_cache = {} # 런 시작 시 캐시 초기화
+        self.current_total_events = 0
+        self.prod_progress.setFormat("Initializing...")
+        self.prod_summary_cache = {} 
         
         self.prod_start_time = datetime.now()
         self.prod_manager.start_prod(f, self.chk_wave.isChecked(), False)
@@ -124,10 +127,20 @@ class ProductionTab(QWidget):
 
     @Slot(dict)
     def update_prod_stats(self, stats):
-        if 'prod_events' in stats: 
-            self.prod_progress.setFormat(f"Processing... {stats['prod_events']} events")
+        # [핵심 패치] 시작 전 수신한 총 이벤트를 기반으로 진행 바 매핑
+        if 'prod_total_events' in stats:
+            self.current_total_events = stats['prod_total_events']
+            self.prod_progress.setMaximum(self.current_total_events)
             
-        # 💡 지표가 도착하면 즉시 DB에 넣지 않고 캐시에 안전하게 모아둠
+        if 'prod_events' in stats: 
+            evt = stats['prod_events']
+            if self.current_total_events > 0:
+                self.prod_progress.setValue(evt)
+                percent = (evt / self.current_total_events) * 100.0
+                self.prod_progress.setFormat(f"Processing... {evt} / {self.current_total_events} ({percent:.1f}%)")
+            else:
+                self.prod_progress.setFormat(f"Processing... {evt} events")
+
         if 'prod_final_events' in stats:
             self.prod_summary_cache['events'] = stats['prod_final_events']
         if 'prod_speed' in stats:
@@ -141,17 +154,17 @@ class ProductionTab(QWidget):
         self.btn_iprev.setEnabled(False); self.btn_inext.setEnabled(False)
         self.btn_ijump.setEnabled(False); self.btn_iquit.setEnabled(False)
         
-        # 💡 [핵심 패치] 프로세스 종료 시 캐시된 데이터를 취합하여 한 번에 DB 전송
         if 'events' in self.prod_summary_cache and 'speed' in self.prod_summary_cache:
-            self.prod_progress.setValue(100)
+            if self.current_total_events > 0:
+                self.prod_progress.setValue(self.current_total_events)
             self.prod_progress.setFormat("Complete!")
+            
             mode = "Full Waveform (-w)" if self.chk_wave.isChecked() else "Fast Physics"
             clean_filename = os.path.basename(self.in_prod_file.text())
             
             self.db.log_prod_run(clean_filename, mode, self.prod_summary_cache['events'], self.prod_summary_cache['speed'])
             self.log_callback(f"<span style='color:#388E3C; font-weight:bold;'>[DB:PROD] File {clean_filename} logged successfully.</span>")
             
-            # DB 새로고침 트리거 명시적 호출
             self.db_refresh_callback()
 
     def force_shutdown(self):
