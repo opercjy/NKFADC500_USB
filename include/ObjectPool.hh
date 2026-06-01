@@ -35,10 +35,10 @@ struct LiveMonitorPacket {
 #pragma pack(pop)
 
 // =========================================================
-// 1. Raw USB Bulk 데이터 구조체 (수정됨)
+// 1. Raw USB Bulk 데이터 구조체
 // =========================================================
 struct alignas(CACHE_LINE_SIZE) DataBlock {
-    // 💡 [버그 수정] Bulk 데이터는 ReadDataWorker 단독 사용이므로 참조 카운팅 불필요
+    // 💡 [치명적 버그 수정] 참조 카운터 완전 삭제 (무조건 즉시 반환)
     std::size_t valid_size{0};
     uint8_t data[BULK_READ_SIZE];
 };
@@ -68,10 +68,11 @@ public:
         for (std::size_t i = 0; i < EVENT_POOL_SIZE; ++i) event_free_queue_.bounded_push(&event_pool_[i]);
     }
 
-    // 💡 [버그 수정] 조건 검사 없이 valid_size 초기화 후 즉각 반환 보장
     inline DataBlock* AcquireFreeBulk() {
         DataBlock* block = nullptr; bulk_free_queue_.pop(block); return block;
     }
+    
+    // 💡 [치명적 버그 수정] 조건 검사 없이 valid_size 초기화 후 즉시 큐로 반환 보장
     inline void ReturnToFreeBulk(DataBlock* block) {
         if (block) { 
             block->valid_size = 0; 
