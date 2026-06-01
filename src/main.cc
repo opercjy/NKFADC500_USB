@@ -83,9 +83,14 @@ int main(int argc, char** argv) {
     USB3Init();
     std::cout << "\033[1;32m>>> STARTING HARDWARE SET PHASE <<<\033[0m\n";
     
-    if (g_app_running.load()) {
-        KFADC500open(sid);
+    // 💡 [핵심 패치 1] 여기서 단 한 번만 장치를 엽니다.
+    if (KFADC500open(sid) < 0) {
+        std::cerr << "\033[1;31m[SYSTEM:ERROR] Failed to open device. Check USB connection.\033[0m\n";
+        USB3Exit();
+        return 1;
+    }
 
+    if (g_app_running.load()) {
         std::cout << "\033[1;33m[SYSTEM:INFO] Executing Deep Hardware Sanitization (EP0 Control)...\033[0m\n";
         libusb_device_handle* devh = nkusb_get_device_handle(sid);
         if (devh) {
@@ -154,17 +159,18 @@ int main(int argc, char** argv) {
         for (int ch = 1; ch <= 4; ++ch) {
             std::cout << "[DAQ:INFO] CH" << ch << " Settled Pedestal: " << KFADC500read_PED(sid, ch) << "\n";
         }
-        // 💡 [핵심 버그 패치] 커널의 USB 핸들을 망가뜨리던 Mid-close 및 Open 로직을 완전히 제거했습니다.
         std::cout << "\033[1;33m[SYSTEM:INFO] Initial pipelines settled.\033[0m\n";
     }
 
     if (!g_app_running.load()) {
         std::cout << "\n\033[1;31m[SYSTEM:WARN] DAQ Initialization Aborted. Exiting safely...\033[0m\n";
-        // 💡 [핵심 버그 패치] 초기화 도중 종료 시에도 무조건 리소스를 닫고 나감!
         KFADC500close(sid);
         USB3Exit();
         return 0;
     }
+
+    // 💡 [핵심 패치 2] 중간에 장치를 끄는 KFADC500close(sid)를 영구히 삭제했습니다.
+    // -------------------------------------------------------------------------
 
     std::cout << "\n\033[1;32m>>> STARTING PARALLEL RUN PHASE <<<\033[0m\n";
     KFADC500reset(sid); 
@@ -182,7 +188,7 @@ int main(int argc, char** argv) {
 
     auto timer_start = std::chrono::steady_clock::now();
 
-    // 💡 [핵심 버그 패치] 메인 스레드는 g_app_running 플래그에 상관없이 워커가 "스스로 배수를 마치고 종료할 때까지" 무조건 기다립니다.
+    // 메인 스레드는 워커가 "스스로 배수를 마치고 종료할 때까지" 무조건 대기
     while (usb_worker.IsRunning()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -208,7 +214,7 @@ int main(int argc, char** argv) {
     std::cout << " RAW File Saved to  : \033[1;36m" << out_file << "\033[0m\n";
     std::cout << "\033[1;32m=====================================================\033[0m\n";
 
-    // 💡 [핵심 버그 패치] 워커가 안전하게 종료된 것을 확인한 뒤에만 장치를 닫음. (Zombie 생성 불가)
+    // 💡 [핵심 패치 3] 오직 모든 스레드가 종료된 이 시점에만 장치를 닫습니다.
     KFADC500close(sid);
     USB3Exit();
 
