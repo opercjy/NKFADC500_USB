@@ -3,10 +3,9 @@ import re
 from datetime import datetime
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, 
                                QLineEdit, QPushButton, QLabel, QSpinBox, QRadioButton, QFileDialog, QComboBox)
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, QSettings
 
 class RunControlTab(QWidget):
-    # 💡 [핵심 패치] 생성자에서 get_hv_cb(HV 요약 긁어오는 함수)를 주입받습니다.
     def __init__(self, daq_manager, db_manager, dashboard, log_callback, get_hv_cb=None):
         super().__init__()
         self.daq = daq_manager
@@ -24,6 +23,9 @@ class RunControlTab(QWidget):
         self.scan_queue = []
         self.active_config_text = ""
 
+        # 💡 [영속성 패치] OS 레벨 환경설정 객체 초기화
+        self.settings = QSettings("NoticeKorea", "KFADC500_GUI")
+
         self.init_ui()
         self.parse_config_and_update_dashboard()
         self.load_last_run_settings()
@@ -36,13 +38,21 @@ class RunControlTab(QWidget):
         l_basic = QVBoxLayout()
         
         h_cfg = QHBoxLayout()
-        h_cfg.addWidget(QLabel("Config File:")); self.in_cfg = QLineEdit("config/kfadc500.config"); h_cfg.addWidget(self.in_cfg)
-        btn_cfg_browse = QPushButton("Browse"); btn_cfg_browse.clicked.connect(self.browse_config_file); h_cfg.addWidget(btn_cfg_browse)
+        h_cfg.addWidget(QLabel("Config File:"))
+        # 💡 [영속성 패치] 마지막으로 사용한 Config 경로 로드
+        saved_cfg = self.settings.value("run_config_file", "config/kfadc500.config")
+        self.in_cfg = QLineEdit(saved_cfg)
+        h_cfg.addWidget(self.in_cfg)
+        btn_cfg_browse = QPushButton("Browse")
+        btn_cfg_browse.clicked.connect(self.browse_config_file)
+        h_cfg.addWidget(btn_cfg_browse)
         l_basic.addLayout(h_cfg)
 
         h_dir = QHBoxLayout()
         h_dir.addWidget(QLabel("Output Dir:"))
-        self.in_out_dir = QLineEdit("data")
+        # 💡 [영속성 패치] 마지막으로 사용한 Output 디렉토리 로드
+        saved_out = self.settings.value("run_output_dir", "data")
+        self.in_out_dir = QLineEdit(saved_out)
         btn_dir_browse = QPushButton("Browse")
         btn_dir_browse.clicked.connect(self.browse_output_dir)
         h_dir.addWidget(self.in_out_dir); h_dir.addWidget(btn_dir_browse)
@@ -138,12 +148,14 @@ class RunControlTab(QWidget):
         f, _ = QFileDialog.getOpenFileName(self, "Select DAQ Config", "config", "Config Files (*.config *.cfg);;All Files (*)")
         if f: 
             self.in_cfg.setText(f)
+            self.settings.setValue("run_config_file", f) # 경로 즉시 저장
             self.parse_config_and_update_dashboard()
     
     def browse_output_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Select Output Directory", "data")
         if d: 
             self.in_out_dir.setText(d)
+            self.settings.setValue("run_output_dir", d) # 경로 즉시 저장
 
     def parse_config_and_update_dashboard(self):
         params = {}
@@ -205,6 +217,10 @@ class RunControlTab(QWidget):
         self.log_callback(f"<span style='color:#1976D2; font-weight:bold;'>[SYSTEM] Ready for next run. Target Run Number: {self.sp_run_no.value():03d}</span>")
 
     def start_standard_daq(self, subrun_idx=1):
+        # 💡 사용자가 수동 타이핑한 경로도 DAQ 시작 시 확정 저장
+        self.settings.setValue("run_config_file", self.in_cfg.text())
+        self.settings.setValue("run_output_dir", self.in_out_dir.text())
+
         self.auto_mode = "STANDARD"
         self.current_subrun = subrun_idx
         self.max_subruns = self.sp_sub_max.value()
@@ -226,6 +242,9 @@ class RunControlTab(QWidget):
         self.daq.start_daq(cfg, out, evts, time)
 
     def start_scan_daq(self):
+        self.settings.setValue("run_config_file", self.in_cfg.text())
+        self.settings.setValue("run_output_dir", self.in_out_dir.text())
+
         self.auto_mode = "SCAN"
         self.btn_start.setEnabled(False); self.btn_scan.setEnabled(False); self.btn_stop.setEnabled(True)
         self.scan_queue = list(range(self.sp_start.value(), self.sp_end.value() + 1, self.sp_step.value()))
@@ -272,7 +291,6 @@ class RunControlTab(QWidget):
             size = self.last_events * self.config_record_len * 512 / 1048576.0
             clean_filename = self.dash.lbl_file.text().replace("File: ", "").strip()
             
-            # 💡 [핵심 패치] HV 탭에서 값을 긁어와서 Config 문자열에 이어 붙임
             hv_info = self.get_hv_cb() if self.get_hv_cb else ""
             full_config_summary = f"{self.active_config_text} {hv_info}"
             
