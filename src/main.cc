@@ -12,7 +12,6 @@
 #include <libusb.h>
 extern "C" {
 #include "NoticeKFADC500USB.h"
-    libusb_device_handle* nkusb_get_device_handle(int sid);
 }
 
 #include "ConfigParser.hh"
@@ -66,6 +65,15 @@ int main(int argc, char** argv) {
     KFADC500_Config config;
     if (!ConfigParser::Parse(config_file, config)) return 1;
 
+    // 인터럽트 가능한 대기 함수 (데드락 방지)
+    auto WaitInterruptible = [](int milliseconds) {
+        int chunks = milliseconds / 10;
+        for (int i = 0; i < chunks; ++i) {
+            if (!g_app_running.load(std::memory_order_relaxed)) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    };
+
     auto now = std::chrono::system_clock::now();
     std::time_t start_time = std::chrono::system_clock::to_time_t(now);
 
@@ -80,51 +88,27 @@ int main(int argc, char** argv) {
     std::cout << "\033[1;36m============================================================\033[0m\n\n";
 
     USB3Init();
+
+    // =========================================================================
+    // 1. 하드웨어 설정 (SET) 페이즈
+    // =========================================================================
     std::cout << "\033[1;32m>>> STARTING HARDWARE SET PHASE <<<\033[0m\n";
     
     if (KFADC500open(sid) < 0) {
-        std::cerr << "\033[1;31m[SYSTEM:ERROR] Failed to open device. Check USB connection.\033[0m\n";
+        std::cerr << "\033[1;31m[SYSTEM:ERROR] Failed to open device.\033[0m\n";
         USB3Exit();
         return 1;
     }
 
-    if (g_app_running.load()) {
-        // =========================================================================
-        // 💡 [사용자 피드백 반영] 하드웨어 친화적 상태 소독 (Gentle Sanitization)
-        // 무리한 EP0 제어를 삭제하고, 정규 명령어를 통한 안전한 리셋과 충분한 대기 시간을 부여합니다.
-        // =========================================================================
-        std::cout << "\033[1;33m[SYSTEM:INFO] Executing hardware state sanitization...\033[0m\n";
-        
-        // 1. DAQ가 이전에 켜져있었다면 하드웨어 레벨에서 즉각 중지
-        KFADC500stop(sid); 
-        std::this_thread::sleep_for(std::chrono::milliseconds(200)); // FIFO 비우기 및 명령 소화 대기
-
-        // 2. 파이프라인 내부에 고여있던 쓰레기(Zombie) 데이터 뽑아내기
-        libusb_device_handle* devh = nkusb_get_device_handle(sid);
-        if (devh) {
-            int transferred = 0;
-            unsigned char garbage[16384];
-            // 10ms 타임아웃으로 읽히는 데이터가 없을 때까지 부드럽게 빼냅니다.
-            while (libusb_bulk_transfer(devh, 0x82, garbage, sizeof(garbage), &transferred, 10) == 0) {}
-        }
-
-        // 3. FADC 내부 레지스터 및 상태머신 강제 초기화 (Hard Reset)
-        KFADC500reset(sid);   
-        std::this_thread::sleep_for(std::chrono::milliseconds(500)); // 칩셋 안정화 대기
-        
-        std::cout << "\033[1;32m[SYSTEM:INFO] Hardware Sanitization Complete.\033[0m\n";
-        // =========================================================================
-
+    if (g_app_running.load(std::memory_order_acquire)) {
         KFADC500write_RM(sid, 1, 1, 0, 0);
         KFADC500reset(sid);
         KFADC500write_DRAMON(sid, 1);
         KFADC500calibrate(sid);
-        
-        // 💡 내부 캘리브레이션 후 잠시 대기
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        WaitInterruptible(200);
     }
 
-    if (g_app_running.load()) {
+    if (g_app_running.load(std::memory_order_acquire)) {
         KFADC500write_AMODE(sid, config.filter);
         KFADC500write_RL(sid, config.record_length);
         KFADC500write_TLT(sid, config.trigger_lut, 0); 
@@ -132,7 +116,7 @@ int main(int argc, char** argv) {
     }
 
     for (int ch = 1; ch <= 4; ++ch) {
-        if (!g_app_running.load()) break; 
+        if (!g_app_running.load(std::memory_order_acquire)) break; 
         int idx = ch - 1;
         KFADC500write_DACOFF(sid, ch, config.offset[idx]);
         KFADC500write_DLY(sid, ch, config.delay[idx]);
@@ -146,32 +130,52 @@ int main(int argc, char** argv) {
         KFADC500write_CW(sid, ch, config.coincidence_width);
     }
     
-    if (g_app_running.load()) {
-        std::cout << "[SYSTEM:INFO] Waiting 500ms for Analog Baseline Settling...\n";
-        std::this_thread::sleep_for(std::chrono::milliseconds(500)); // 💡 아날로그 회로 안정화 시간을 길게 확보
+    if (g_app_running.load(std::memory_order_acquire)) {
+        std::cout << "[SYSTEM:INFO] Waiting 200ms for Analog Baseline Settling...\n";
+        WaitInterruptible(200); 
     }
 
     for (int ch = 1; ch <= 4; ++ch) {
-        if (!g_app_running.load()) break;
+        if (!g_app_running.load(std::memory_order_acquire)) break;
         KFADC500measure_PED(sid, ch);
     }
 
-    if (g_app_running.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    if (g_app_running.load(std::memory_order_acquire)) {
+        WaitInterruptible(200);
         for (int ch = 1; ch <= 4; ++ch) {
             std::cout << "[DAQ:INFO] CH" << ch << " Settled Pedestal: " << KFADC500read_PED(sid, ch) << "\n";
         }
-        std::cout << "\033[1;33m[SYSTEM:INFO] Initial pipelines settled.\033[0m\n";
     }
 
-    if (!g_app_running.load()) {
-        std::cout << "\n\033[1;31m[SYSTEM:WARN] DAQ Initialization Aborted. Exiting safely...\033[0m\n";
+    // =========================================================================
+    // 2. 검증된 하드웨어 세션 분리 (Mid-Close) 및 안정화 대기
+    // =========================================================================
+    if (g_app_running.load(std::memory_order_acquire)) {
+        std::cout << "\033[1;33m[SYSTEM:INFO] Closing device to simulate set/run separation...\033[0m\n";
         KFADC500close(sid);
+    }
+
+    // 💡 [핵심 복원] 하드웨어가 내부 FIFO를 비우고 세션을 온전히 정리할 수 있도록 1초(1000ms) 대기
+    std::cout << "[SYSTEM:INFO] Waiting 1000ms for Hardware Endpoint Flush...\n";
+    WaitInterruptible(1000);
+
+    if (!g_app_running.load(std::memory_order_acquire)) {
+        std::cout << "\n\033[1;31m[SYSTEM:WARN] DAQ Initialization Aborted. Exiting safely...\033[0m\n";
         USB3Exit();
         return 0;
     }
 
+    // =========================================================================
+    // 3. 획득 (RUN) 페이즈 및 락프리 엔진 기동
+    // =========================================================================
     std::cout << "\n\033[1;32m>>> STARTING PARALLEL RUN PHASE <<<\033[0m\n";
+    
+    if (KFADC500open(sid) < 0) {
+        std::cerr << "\033[1;31m[SYSTEM:ERROR] Failed to re-open device for RUN phase.\033[0m\n";
+        USB3Exit();
+        return 1;
+    }
+    
     KFADC500reset(sid); 
 
     g_system_running.store(true, std::memory_order_release);
@@ -182,24 +186,19 @@ int main(int argc, char** argv) {
     zmq_pub.Start();
     usb_worker.Start();
     
-    // 💡 [사용자 피드백 반영] 데이터 획득(Start) 직전에 장치가 완벽히 숨을 고를 수 있도록 1초 대기
-    std::cout << "[SYSTEM:INFO] Preparing hardware for acquisition trigger...\n";
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
     KFADC500start(sid); 
     std::cout << "\033[1;32m[SYSTEM:INFO] Trigger FSM Armed. DAQ Core Running at Zero-Deadtime.\033[0m\n";
 
     auto timer_start = std::chrono::steady_clock::now();
 
-    // 메인 루프 대기 (워커 스레드가 살아있는 동안)
+    // 메인 스레드는 강제 종료 시그널이 인가되지 않고, 워커가 살아있는 동안 조용히 대기
     while (g_app_running.load(std::memory_order_acquire) && usb_worker.IsRunning()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
     std::cout << "\n\033[1;33m[SYSTEM:INFO] Stopping Hardware Trigger (Draining FIFO)...\033[0m\n";
     
-    // 강제 종료 시, ReadDataWorker.cc 내부에서 KFADC500stop을 호출하도록 권한을 완전히 이양했으므로
-    // 메인 스레드는 조용히 워커가 완전히 종료될 때까지 기다리기만 합니다.
+    // 워커가 스스로 FIFO를 완벽히 배수(Drain)하고 종료할 때까지 대기
     while (usb_worker.IsRunning()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -225,7 +224,7 @@ int main(int argc, char** argv) {
     std::cout << " RAW File Saved to  : \033[1;36m" << out_file << "\033[0m\n";
     std::cout << "\033[1;32m=====================================================\033[0m\n";
 
-    // 모든 작업이 안전하게 종료된 후 닫기
+    // 💡 [안전 보장] 모든 작업이 끝난 후 최종적으로 장치를 닫음
     KFADC500close(sid);
     USB3Exit();
 
