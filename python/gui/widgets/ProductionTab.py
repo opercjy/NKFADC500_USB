@@ -3,7 +3,7 @@ from datetime import datetime
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, 
                                QLineEdit, QPushButton, QRadioButton, QProgressBar, 
                                QInputDialog, QFileDialog)
-from PySide6.QtCore import Slot
+from PySide6.QtCore import Slot, QSettings
 from core.ProcessManager import ProcessManager
 
 class ProductionTab(QWidget):
@@ -20,7 +20,10 @@ class ProductionTab(QWidget):
 
         self.prod_start_time = None
         self.prod_summary_cache = {} 
-        self.current_total_events = 0 # 진행률 추적을 위한 변수
+        self.current_total_events = 0 
+        
+        # 💡 [영속성 패치] OS 레벨 환경설정 객체
+        self.settings = QSettings("NoticeKorea", "KFADC500_GUI")
         self.init_ui()
 
     def init_ui(self):
@@ -28,7 +31,10 @@ class ProductionTab(QWidget):
 
         grp_file = QGroupBox("1. Target Data File (.dat)")
         h_file = QHBoxLayout()
-        self.in_prod_file = QLineEdit()
+        # 💡 [영속성 패치] 
+        saved_prod = self.settings.value("prod_target_file", "")
+        self.in_prod_file = QLineEdit(saved_prod)
+        
         btn_prod_browse = QPushButton("Browse")
         btn_prod_browse.clicked.connect(self.browse_prod_file)
         h_file.addWidget(self.in_prod_file)
@@ -90,10 +96,13 @@ class ProductionTab(QWidget):
         f, _ = QFileDialog.getOpenFileName(self, "Select Raw Data to Process", "data", "Data Files (*.dat)")
         if f: 
             self.in_prod_file.setText(f)
+            self.settings.setValue("prod_target_file", f) # 즉시 기억
 
     def start_prod_batch(self):
         f = self.in_prod_file.text()
         if not f: return
+        self.settings.setValue("prod_target_file", f) # 수동 입력 대비
+
         self.btn_batch_run.setEnabled(False)
         self.btn_batch_stop.setEnabled(True)
         self.prod_progress.setValue(0)
@@ -111,6 +120,8 @@ class ProductionTab(QWidget):
     def start_prod_inter(self):
         f = self.in_prod_file.text()
         if not f: return
+        self.settings.setValue("prod_target_file", f) # 수동 입력 대비
+
         self.btn_inter_run.setEnabled(False)
         self.btn_iprev.setEnabled(True); self.btn_inext.setEnabled(True)
         self.btn_ijump.setEnabled(True); self.btn_iquit.setEnabled(True)
@@ -127,7 +138,6 @@ class ProductionTab(QWidget):
 
     @Slot(dict)
     def update_prod_stats(self, stats):
-        # [핵심 패치] 시작 전 수신한 총 이벤트를 기반으로 진행 바 매핑
         if 'prod_total_events' in stats:
             self.current_total_events = stats['prod_total_events']
             self.prod_progress.setMaximum(self.current_total_events)
