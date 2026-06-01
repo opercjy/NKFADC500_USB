@@ -145,7 +145,6 @@ int main(int argc, char** argv) {
     ReadDataWorker usb_worker(sid, nullptr, nullptr, out_file, config.record_length, preset_events, preset_time);
     ZmqPublisher zmq_pub("tcp://*:5555", nullptr);
     
-    // 💡 [버그 수정] 사용자가 원하지 않았던 온라인 ROOT 변환 스레드 완전히 제거 완료
     zmq_pub.Start();
     usb_worker.Start();
     
@@ -154,17 +153,15 @@ int main(int argc, char** argv) {
 
     auto timer_start = std::chrono::steady_clock::now();
 
+    // 💡 [핵심 패치 4] 메인 스레드는 워커 스레드가 자가 종료할 때까지 조용히 대기만 수행
     while (g_app_running.load(std::memory_order_acquire) && usb_worker.IsRunning()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    std::cout << "\n\033[1;33m[SYSTEM:INFO] Stopping Hardware Trigger (Draining FIFO)...\033[0m\n";
-    KFADC500stop(sid);
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
     std::cout << "[SYSTEM:INFO] Initiating Graceful Shutdown for Lock-Free Pipelines...\n";
     g_system_running.store(false, std::memory_order_release);
     
+    // 워커 스레드가 안전하게 종료될 때까지 대기 (Exit Code 9 방지)
     usb_worker.Stop();
     zmq_pub.Stop();
 
@@ -184,6 +181,7 @@ int main(int argc, char** argv) {
     std::cout << " RAW File Saved to  : \033[1;36m" << out_file << "\033[0m\n";
     std::cout << "\033[1;32m=====================================================\033[0m\n";
 
+    // 워커가 끝난 완벽하게 조용한 상태에서 USB 세션 닫기
     KFADC500close(sid);
     USB3Exit();
 
