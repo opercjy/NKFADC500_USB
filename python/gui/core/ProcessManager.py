@@ -37,7 +37,8 @@ class ProcessManager(QObject):
         if self.process.state() == QProcess.Running:
             self.log_signal.emit("<span style='color:#FF7F0E;'><b>[SYSTEM] Terminating process...</b></span>")
             self.process.terminate() 
-            if not self.process.waitForFinished(2000):
+            # 💡 [핵심 패치] 하드웨어가 FIFO를 비우고 스스로 종료할 시간을 충분히 줌 (2초 -> 5초)
+            if not self.process.waitForFinished(5000):
                 self.process.kill()
 
     def write_stdin(self, text):
@@ -53,7 +54,6 @@ class ProcessManager(QObject):
             if "Trigger FSM Armed" in clean_line:
                 self.run_started.emit()
 
-            # [핵심 패치] 사전 계산된 총 이벤트 수를 캡처
             if "Total Events to Process" in clean_line:
                 m_tot = re.search(r'Total Events to Process:\s*(\d+)', clean_line)
                 if m_tot: self.stat_signal.emit({'prod_total_events': int(m_tot.group(1))})
