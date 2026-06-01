@@ -63,9 +63,7 @@ void ReadDataWorker::ReadLoop() {
     const int PED_START = 22;
     const int PED_END = 80;
 
-    // 모니터링용 활성 이벤트 블록 할당
-    EventBlock* mon_ev = g_pipeline.AcquireFreeEvent();
-    if (mon_ev) std::memset(&mon_ev->payload, 0, sizeof(LiveMonitorPacket));
+    EventBlock* mon_ev = nullptr;
 
     while (is_running_.load(std::memory_order_acquire)) {
         if (preset_events_ > 0 && total_events_.load(std::memory_order_relaxed) >= preset_events_) break;
@@ -77,83 +75,86 @@ void ReadDataWorker::ReadLoop() {
         int bcount = KFADC500read_BCOUNT(sid_);
         if (bcount >= read_kbytes) {
             DataBlock* bulk = g_pipeline.AcquireFreeBulk();
-            if (!bulk) { CPU_RELAX(); continue; }
-
-            // 💡 [핵심] 순수 바이너리를 오직 .dat 에만 기록
-            KFADC500read_DATA(sid_, read_kbytes, reinterpret_cast<char*>(bulk->data));
-            bulk->valid_size = read_bytes;
-            fout.write(reinterpret_cast<const char*>(bulk->data), bulk->valid_size);
-            total_bytes_.fetch_add(bulk->valid_size, std::memory_order_relaxed);
-            
-            residual_buffer_.insert(residual_buffer_.end(), bulk->data, bulk->data + bulk->valid_size);
-            size_t offset = 0;
-            
-            // GUI 모니터링을 위한 백그라운드 데이터 파싱
-            while (offset + event_size <= residual_buffer_.size()) {
-                const uint8_t* evt_bytes = residual_buffer_.data() + offset;
+            if (bulk) {
+                KFADC500read_DATA(sid_, read_kbytes, reinterpret_cast<char*>(bulk->data));
+                bulk->valid_size = read_bytes;
+                fout.write(reinterpret_cast<const char*>(bulk->data), bulk->valid_size);
+                total_bytes_.fetch_add(bulk->valid_size, std::memory_order_relaxed);
                 
-                int current_evt_num = total_events_.fetch_add(1, std::memory_order_relaxed);
-
-                if (mon_ev && mon_ev->payload.num_events < MAX_MONITOR_EVENTS) {
-                    mon_ev->payload.samples_per_ch = samples_per_ch;
-                    int idx = mon_ev->payload.num_events;
-
-                    for (int ch = 0; ch < 4; ++ch) {
-                        double ped = 0.0;
-                        int ped_start = std::min(PED_START, samples_per_ch);
-                        int ped_end = std::min(PED_END, samples_per_ch);
-                        int num_ped = ped_end - ped_start;
-                        
-                        for (int i = ped_start; i < ped_end; ++i) {
-                            uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2));
-                            ped += adc;
-                        }
-                        if (num_ped > 0) ped /= num_ped;
-
-                        double ch_charge = 0;
-                        for (int i = SKIP_BINS; i < samples_per_ch; ++i) {
-                            uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2));
-                            double inverted_adc = ped - adc;
-                            ch_charge += inverted_adc;
-                            if (i < 4096) mon_ev->payload.last_waveform[ch][i] = inverted_adc;
-                        }
-                        for (int i = samples_per_ch; i < 4096; ++i) mon_ev->payload.last_waveform[ch][i] = 0.0;
-                        mon_ev->payload.charge_array[ch][idx] = ch_charge;
+                residual_buffer_.insert(residual_buffer_.end(), bulk->data, bulk->data + bulk->valid_size);
+                size_t offset = 0;
+                
+                while (offset + event_size <= residual_buffer_.size()) {
+                    if (!mon_ev) {
+                        mon_ev = g_pipeline.AcquireFreeEvent();
+                        if (mon_ev) std::memset(&mon_ev->payload, 0, sizeof(LiveMonitorPacket));
                     }
-                    mon_ev->payload.num_events++;
+
+                    if (mon_ev && mon_ev->payload.num_events < MAX_MONITOR_EVENTS) {
+                        const uint8_t* evt_bytes = residual_buffer_.data() + offset;
+                        mon_ev->payload.samples_per_ch = samples_per_ch;
+                        int idx = mon_ev->payload.num_events;
+
+                        for (int ch = 0; ch < 4; ++ch) {
+                            double ped = 0.0;
+                            int ped_start = std::min(PED_START, samples_per_ch);
+                            int ped_end = std::min(PED_END, samples_per_ch);
+                            int num_ped = ped_end - ped_start;
+                            
+                            for (int i = ped_start; i < ped_end; ++i) {
+                                uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2));
+                                ped += adc;
+                            }
+                            if (num_ped > 0) ped /= num_ped;
+
+                            double ch_charge = 0;
+                            for (int i = SKIP_BINS; i < samples_per_ch; ++i) {
+                                uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2));
+                                double inverted_adc = ped - adc;
+                                ch_charge += inverted_adc;
+                                if (i < 4096) mon_ev->payload.last_waveform[ch][i] = inverted_adc;
+                            }
+                            for (int i = samples_per_ch; i < 4096; ++i) mon_ev->payload.last_waveform[ch][i] = 0.0;
+                            mon_ev->payload.charge_array[ch][idx] = ch_charge;
+                        }
+                        mon_ev->payload.num_events++;
+                        total_events_.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    offset += event_size;
                 }
-                offset += event_size;
+
+                g_pipeline.ReturnToFreeBulk(bulk);
+                if (offset > 0) residual_buffer_.erase(residual_buffer_.begin(), residual_buffer_.begin() + offset);
             }
+        }
 
-            g_pipeline.ReturnToFreeBulk(bulk);
-            if (offset > 0) residual_buffer_.erase(residual_buffer_.begin(), residual_buffer_.begin() + offset);
-
-            // 💡 [배치 송출] 데이터가 2000개 모이거나 100ms 가 지나면 한 번에 ZMQ 송출
-            auto now = std::chrono::steady_clock::now();
-            if (mon_ev && (mon_ev->payload.num_events >= MAX_MONITOR_EVENTS || 
-                std::chrono::duration_cast<std::chrono::milliseconds>(now - last_zmq_time).count() >= 100)) {
-                
-                if (mon_ev->payload.num_events > 0) {
-                    mon_ev->payload.total_acquired_events = total_events_.load(std::memory_order_relaxed);
-                    mon_ev->payload.queue_size = g_pipeline.GetZmqQueueSize();
-                    mon_ev->payload.pool_free_size = g_pipeline.GetEventFreeSize();
-
-                    mon_ev->Retain(1); // 소비자(ZMQ) 1명
-                    g_pipeline.PushToZmq(mon_ev);
-                }
-                
-                // 새로운 빈 껍데기 획득
+        // 💡 [패치] 하드웨어 버퍼 상태와 무관하게 무조건 100ms 주기로 텔레메트리/파형 송출 보장
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_zmq_time).count() >= 100) {
+            
+            if (!mon_ev) {
                 mon_ev = g_pipeline.AcquireFreeEvent();
                 if (mon_ev) std::memset(&mon_ev->payload, 0, sizeof(LiveMonitorPacket));
-                last_zmq_time = now;
             }
 
-        } else {
+            if (mon_ev) {
+                mon_ev->payload.total_acquired_events = total_events_.load(std::memory_order_relaxed);
+                mon_ev->payload.queue_size = g_pipeline.GetZmqQueueSize();
+                mon_ev->payload.pool_free_size = g_pipeline.GetEventFreeSize();
+
+                mon_ev->Retain(1); // 소비자(ZMQ) 1명
+                g_pipeline.PushToZmq(mon_ev);
+                mon_ev = nullptr; // 송출 후 포인터를 비워 다음 루프에서 새로 획득하도록 함
+            }
+            last_zmq_time = now;
+        }
+
+        if (bcount < read_kbytes) {
             CPU_RELAX();
         }
     }
 
-    if (mon_ev) g_pipeline.ReturnToFreeEvent(mon_ev); // 종료 시 잔여 껍데기 반환
+    if (mon_ev) g_pipeline.ReturnToFreeEvent(mon_ev); 
     fout.close();
     is_running_.store(false, std::memory_order_release);
 }
