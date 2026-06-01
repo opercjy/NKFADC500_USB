@@ -25,15 +25,11 @@ void ZmqPublisher::Start() {
     if (is_running_.load(std::memory_order_acquire)) return;
     is_running_.store(true, std::memory_order_release);
     pub_thread_ = std::thread(&ZmqPublisher::PublishLoop, this);
-    std::cout << "[ZMQ:INFO] Zero-Copy Publisher Started on " << endpoint_ << "\n";
 }
 
 void ZmqPublisher::Stop() {
     is_running_.store(false, std::memory_order_release);
-    if (pub_thread_.joinable()) {
-        pub_thread_.join();
-        std::cout << "[ZMQ:INFO] Publisher Terminated.\n";
-    }
+    if (pub_thread_.joinable()) pub_thread_.join();
 }
 
 void ZmqPublisher::PublishLoop() {
@@ -46,7 +42,9 @@ void ZmqPublisher::PublishLoop() {
         }
 
         zmq_msg_t msg;
-        zmq_msg_init_data(&msg, ev, sizeof(EventBlock), FreeZmqMessage, ev);
+        // 💡 [버그 수정] 파이썬 GUI가 100% 동일하게 해석할 수 있도록,
+        // EventBlock의 맨 앞부분(std::atomic 헤더)을 제외한 순수 payload 메모리만 전송합니다.
+        zmq_msg_init_data(&msg, &ev->payload, sizeof(LiveMonitorPacket), FreeZmqMessage, ev);
         int rc = zmq_msg_send(&msg, zmq_pub_, ZMQ_DONTWAIT);
 
         if (rc == -1) {
