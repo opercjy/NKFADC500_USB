@@ -8,7 +8,11 @@
 #include <ctime>
 #include <TApplication.h>
 #include "RootProducer.hh"
+#include "ObjectPool.hh" // 💡 [패치] LockFreePipeline 포함
 
+// 💡 [패치] 오프라인 프로덕션 바이너리를 위한 글로벌 심볼 바인딩
+LockFreePipeline g_pipeline;
+std::atomic<bool> g_system_running{false};
 std::atomic<bool> g_prod_running(true);
 
 void SigIntHandler(int /*signum*/) {
