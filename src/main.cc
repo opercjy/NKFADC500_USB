@@ -82,6 +82,21 @@ int main(int argc, char** argv) {
     
     if (g_app_running.load()) {
         KFADC500open(sid);
+
+        // =========================================================================
+        // 💡 [핵심 패치] 제1원리적 상태 소독 (State Sanitization) 시퀀스 추가
+        // =========================================================================
+        std::cout << "\033[1;33m[SYSTEM:INFO] Executing hardware state sanitization...\033[0m\n";
+        
+        // 1. DAQ가 이전에 비정상 종료되어 계속 켜져있다면, 하드웨어 레벨에서 즉각 중지시켜 FIFO 범람을 막음
+        KFADC500stop(sid); 
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+        // 2. FADC 내부 레지스터 및 상태머신 강제 초기화 (Hard Reset)
+        KFADC500reset(sid);   
+        std::this_thread::sleep_for(std::chrono::milliseconds(500)); // 칩셋 안정화 및 USB 파이프라인 정리 대기
+        // =========================================================================
+
         KFADC500write_RM(sid, 1, 1, 0, 0);
         KFADC500reset(sid);
         KFADC500write_DRAMON(sid, 1);
@@ -153,15 +168,17 @@ int main(int argc, char** argv) {
 
     auto timer_start = std::chrono::steady_clock::now();
 
-    // 💡 [핵심 패치 4] 메인 스레드는 워커 스레드가 자가 종료할 때까지 조용히 대기만 수행
     while (g_app_running.load(std::memory_order_acquire) && usb_worker.IsRunning()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
+    std::cout << "\n\033[1;33m[SYSTEM:INFO] Stopping Hardware Trigger (Draining FIFO)...\033[0m\n";
+    KFADC500stop(sid);
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
     std::cout << "[SYSTEM:INFO] Initiating Graceful Shutdown for Lock-Free Pipelines...\n";
     g_system_running.store(false, std::memory_order_release);
     
-    // 워커 스레드가 안전하게 종료될 때까지 대기 (Exit Code 9 방지)
     usb_worker.Stop();
     zmq_pub.Stop();
 
@@ -181,7 +198,6 @@ int main(int argc, char** argv) {
     std::cout << " RAW File Saved to  : \033[1;36m" << out_file << "\033[0m\n";
     std::cout << "\033[1;32m=====================================================\033[0m\n";
 
-    // 워커가 끝난 완벽하게 조용한 상태에서 USB 세션 닫기
     KFADC500close(sid);
     USB3Exit();
 
