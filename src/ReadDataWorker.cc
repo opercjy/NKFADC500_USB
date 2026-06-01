@@ -11,6 +11,7 @@ extern "C" {
 
 extern LockFreePipeline g_pipeline;
 extern std::atomic<bool> g_system_running;
+extern std::atomic<bool> g_app_running; // 💡 [추가] 메인 시스템의 종료 시그널 감지용
 
 ReadDataWorker::ReadDataWorker(int sid, void*, void*, 
                                const std::string& out_file, int record_length, 
@@ -64,14 +65,32 @@ void ReadDataWorker::ReadLoop() {
     const int PED_END = 80;
 
     EventBlock* mon_ev = nullptr;
+    bool stop_issued = false; // 💡 [추가] 하드웨어 트리거 정지 여부 추적
 
     while (is_running_.load(std::memory_order_acquire)) {
-        if (preset_events_ > 0 && total_events_.load(std::memory_order_relaxed) >= preset_events_) break;
-        if (preset_time_ > 0) {
-            auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() >= preset_time_) break;
+        
+        // 💡 [핵심 패치 1] 외부 강제 종료(Ctrl+C 또는 GUI Stop) 감지 시 워커가 직접 H/W 중지
+        if (!g_app_running.load(std::memory_order_acquire) && !stop_issued) {
+            std::cout << "\n\033[1;33m[DAQ:INFO] Stop signal received. Halting hardware trigger safely...\033[0m\n";
+            KFADC500stop(sid_);
+            stop_issued = true;
         }
 
+        // 💡 [핵심 패치 2] 프리셋 달성 감지 (아직 정지 명령이 안 내려진 경우)
+        if (!stop_issued) {
+            if (preset_events_ > 0 && total_events_.load(std::memory_order_relaxed) >= preset_events_) {
+                KFADC500stop(sid_);
+                stop_issued = true;
+            } else if (preset_time_ > 0) {
+                auto now = std::chrono::steady_clock::now();
+                if (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() >= preset_time_) {
+                    KFADC500stop(sid_);
+                    stop_issued = true;
+                }
+            }
+        }
+
+        // 💡 USB Endpoint 접근은 오직 이 루프에서만 발생함 (Race Condition 원천 차단)
         int bcount = KFADC500read_BCOUNT(sid_);
         if (bcount >= read_kbytes) {
             DataBlock* bulk = g_pipeline.AcquireFreeBulk();
@@ -118,7 +137,7 @@ void ReadDataWorker::ReadLoop() {
                             mon_ev->payload.charge_array[ch][idx] = ch_charge;
                         }
                         mon_ev->payload.num_events++;
-                        total_events_.fetch_add(1, std::memory_order_relaxed);
+                        total_events_.fetch_add(1, std::order_relaxed);
                     }
                     offset += event_size;
                 }
@@ -126,31 +145,31 @@ void ReadDataWorker::ReadLoop() {
                 g_pipeline.ReturnToFreeBulk(bulk);
                 if (offset > 0) residual_buffer_.erase(residual_buffer_.begin(), residual_buffer_.begin() + offset);
             }
+        } else {
+            // 💡 [핵심 패치 3] 정지 명령이 내려진 상태에서 잔여 데이터마저 없다면 완벽히 Drain 된 것
+            if (stop_issued) {
+                std::cout << "[DAQ:INFO] Hardware FIFO drained completely.\n";
+                break; // 루프 안전 탈출
+            }
+            CPU_RELAX();
         }
 
-        // 💡 [패치] 하드웨어 버퍼 상태와 무관하게 무조건 100ms 주기로 텔레메트리/파형 송출 보장
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_zmq_time).count() >= 100) {
-            
             if (!mon_ev) {
                 mon_ev = g_pipeline.AcquireFreeEvent();
                 if (mon_ev) std::memset(&mon_ev->payload, 0, sizeof(LiveMonitorPacket));
             }
-
             if (mon_ev) {
                 mon_ev->payload.total_acquired_events = total_events_.load(std::memory_order_relaxed);
                 mon_ev->payload.queue_size = g_pipeline.GetZmqQueueSize();
                 mon_ev->payload.pool_free_size = g_pipeline.GetEventFreeSize();
 
-                mon_ev->Retain(1); // 소비자(ZMQ) 1명
+                mon_ev->Retain(1);
                 g_pipeline.PushToZmq(mon_ev);
-                mon_ev = nullptr; // 송출 후 포인터를 비워 다음 루프에서 새로 획득하도록 함
+                mon_ev = nullptr; 
             }
             last_zmq_time = now;
-        }
-
-        if (bcount < read_kbytes) {
-            CPU_RELAX();
         }
     }
 
