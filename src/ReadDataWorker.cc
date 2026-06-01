@@ -32,8 +32,6 @@ void ReadDataWorker::Start() {
 }
 
 void ReadDataWorker::Stop() {
-    // 💡 [패치] 여기서 is_running_을 false로 강제 변경하지 않음! 
-    // 오직 루프 내부의 자연 배수(Drain)가 끝난 후 스스로 false로 변경하도록 대기만 함.
     if (worker_thread_.joinable()) worker_thread_.join();
 }
 
@@ -68,14 +66,14 @@ void ReadDataWorker::ReadLoop() {
 
     while (is_running_.load(std::memory_order_acquire)) {
         
-        // 1. 외부 정지 시그널(Ctrl+C, GUI) 감지 시 H/W 래치 잠금
+        // 1. 외부 강제 종료 시그널(Ctrl+C 또는 GUI Stop) 처리
         if (!g_app_running.load(std::memory_order_acquire) && !stop_issued) {
             std::cout << "\n\033[1;33m[DAQ:INFO] Stop signal received. Halting hardware trigger safely...\033[0m\n";
             KFADC500stop(sid_);
             stop_issued = true;
         }
 
-        // 2. 프리셋 이벤트 도달 시 H/W 래치 잠금
+        // 2. 프리셋 목표 달성 처리
         if (!stop_issued) {
             if (preset_events_ > 0 && total_events_.load(std::memory_order_relaxed) >= preset_events_) {
                 KFADC500stop(sid_);
@@ -90,6 +88,8 @@ void ReadDataWorker::ReadLoop() {
         }
 
         int bcount = KFADC500read_BCOUNT(sid_);
+        
+        // 💡 [핵심 패치 4] 하드웨어 FIFO에 데이터가 있다면 무조건 다 퍼내야 루프를 탈출할 수 있음
         if (bcount >= read_kbytes) {
             DataBlock* bulk = g_pipeline.AcquireFreeBulk();
             if (bulk) {
@@ -144,11 +144,10 @@ void ReadDataWorker::ReadLoop() {
                 if (offset > 0) residual_buffer_.erase(residual_buffer_.begin(), residual_buffer_.begin() + offset);
             }
         } else {
-            // 💡 [핵심 패치 3] H/W 래치가 닫혔고(stop_issued), 더 이상 읽어올 버퍼도 없다면?
-            // 비로소 안전하게 메모리를 내리고 루프를 탈출!
+            // 더 이상 읽어올 16KB 블록이 없고, 정지 명령도 내려졌다면
             if (stop_issued) {
                 std::cout << "[DAQ:INFO] Hardware FIFO drained completely.\n";
-                break; 
+                break; // 💡 비로소 루프를 안전하게 탈출합니다.
             }
             CPU_RELAX();
         }
