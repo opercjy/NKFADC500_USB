@@ -1,101 +1,80 @@
-import numpy as np
-import pyqtgraph as pg
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QPushButton, QLabel
-from PySide6.QtCore import Slot, Qt, Signal
+import os
+from PySide6.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QLCDNumber
+from PySide6.QtCore import Qt
 
-class LiveMonitorTab(QWidget):
-    monitoring_toggled = Signal(bool) 
-    clear_requested = Signal() 
-
+class LiveDashboard(QGroupBox):
     def __init__(self):
-        super().__init__()
-        self.line_colors = ['#1F77B4', '#D62728', '#FF7F0E', '#2CA02C']
-        self.brush_colors = [(31, 119, 180, 100), (214, 39, 40, 100), (255, 127, 14, 100), (44, 160, 44, 100)]
+        super().__init__("Live DAQ Dashboard")
+        self.setStyleSheet("QGroupBox { background-color: #F8F9FA; border: 2px solid #B0BEC5; min-width: 320px; max-width: 400px;}")
         self.init_ui()
 
     def init_ui(self):
-        mon_layout = QVBoxLayout(self)
-
-        ctrl_layout = QHBoxLayout()
-        self.chk_enable = QCheckBox("Enable Live Monitoring")
-        self.chk_enable.setStyleSheet("font-weight: bold; color: #D32F2F; font-size: 14px;")
-        self.chk_enable.stateChanged.connect(self.on_enable_changed)
+        l_dash = QVBoxLayout(self)
         
-        self.btn_clear = QPushButton("[ Clear Spectrum ]")
-        self.btn_clear.setStyleSheet("background-color: #757575; color: white; font-weight: bold;")
-        self.btn_clear.clicked.connect(self.clear_requested.emit)
+        self.lbl_current_time = QLabel("----/--/-- --:--:--")
+        self.lbl_current_time.setAlignment(Qt.AlignCenter)
+        self.lbl_current_time.setStyleSheet(
+            "background-color: #1E1E1E; color: #00FF00; font-family: Consolas; "
+            "font-size: 24px; font-weight: bold; padding: 10px; "
+            "border-radius: 5px; border: 2px inset #424242; margin-bottom: 5px;"
+        )
+        l_dash.addWidget(self.lbl_current_time)
 
-        ctrl_layout.addWidget(self.chk_enable)
-        ctrl_layout.addStretch()
-        ctrl_layout.addWidget(QLabel("Note: Disable monitoring during long-term DAQ to save CPU/GPU resources."))
-        ctrl_layout.addStretch()
-        ctrl_layout.addWidget(self.btn_clear)
+        self.lbl_mode = QLabel("MODE: IDLE")
+        self.lbl_mode.setStyleSheet("color: #1F77B4; font-size: 16px; font-weight: bold;")
+        self.lbl_limit = QLabel("Limit: None"); self.lbl_limit.setStyleSheet("color: #555555; font-weight:bold;")
+        self.lbl_file = QLabel("Current File: -"); self.lbl_file.setStyleSheet("color: #555555; font-weight:bold;")
+        l_dash.addWidget(self.lbl_mode); l_dash.addWidget(self.lbl_limit); l_dash.addWidget(self.lbl_file)
         
-        mon_layout.addLayout(ctrl_layout)
+        h_time = QHBoxLayout()
+        self.lbl_start = QLabel("Start: --:--:--"); self.lbl_start.setStyleSheet("color: #333333;")
+        self.lbl_elapsed = QLabel("Elapsed: 00:00:00"); self.lbl_elapsed.setStyleSheet("color: #D62728;")
+        h_time.addWidget(self.lbl_start); h_time.addWidget(self.lbl_elapsed)
+        l_dash.addLayout(h_time)
 
-        self.glw = pg.GraphicsLayoutWidget()
-        self.glw.setBackground('#FFFFFF')
-        mon_layout.addWidget(self.glw)
+        l_dash.addWidget(QLabel("Total Events Acquired:"))
+        self.lcd_evt = QLCDNumber()
+        self.lcd_evt.setDigitCount(9); self.lcd_evt.setSegmentStyle(QLCDNumber.Flat)
+        self.lcd_evt.setStyleSheet("color: #D62728; background: #FFFFFF; min-height: 50px;")
+        l_dash.addWidget(self.lcd_evt)
 
-        self.wave_curves = []
-        self.hist_curves = []
-        self.hist_data = [np.array([]) for _ in range(4)]
+        self.lbl_rate = QLabel("Rate: 0.0 Hz")
+        self.lbl_rate.setStyleSheet("color: #2CA02C; font-size: 16px; font-weight: bold;")
+        l_dash.addWidget(self.lbl_rate)
+        
+        self.lbl_size = QLabel("File Size: 0.00 MB"); self.lbl_size.setStyleSheet("color: #FF7F0E; font-size: 14px;")
+        self.lbl_speed = QLabel("Speed: 0.00 MB/s"); self.lbl_speed.setStyleSheet("color: #1F77B4; font-size: 14px;")
+        l_dash.addWidget(self.lbl_size); l_dash.addWidget(self.lbl_speed)
 
-        for ch in range(4):
-            # 💡 [물리 단위 맵핑] 라벨 추가
-            p_wave = self.glw.addPlot(title=f"Channel {ch} Waveform")
-            p_wave.setLabel('bottom', "Time", units="ns")
-            p_wave.setLabel('left', "Amplitude", units="mV")
-            p_wave.showGrid(x=True, y=True, alpha=0.3) 
-            p_wave.addItem(pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('#FF5252', width=1.5, style=Qt.DashLine)))
-            self.wave_curves.append(p_wave.plot(pen=pg.mkPen(color=self.line_colors[ch], width=1.8)))
-            
-            p_spec = self.glw.addPlot(title=f"Channel {ch} Charge Spectrum")
-            p_spec.setLabel('bottom', "Integrated Charge")
-            p_spec.showGrid(x=True, y=True, alpha=0.3)
-            self.hist_curves.append(p_spec.plot(stepMode="center", fillLevel=0, fillOutline=True, pen=self.line_colors[ch], brush=self.brush_colors[ch]))
-            self.glw.nextRow()
+        h_sys = QHBoxLayout()
+        self.lbl_q = QLabel("DataQ: 0"); self.lbl_q.setStyleSheet("background: #FFF9C4; border: 1px solid #FBC02D; padding: 3px; color: #F57F17;")
+        self.lbl_p = QLabel("Used Pool: 0"); self.lbl_p.setStyleSheet("background: #C8E6C9; border: 1px solid #388E3C; padding: 3px; color: #1B5E20;")
+        h_sys.addWidget(self.lbl_q); h_sys.addWidget(self.lbl_p)
+        l_dash.addLayout(h_sys)
 
-    def on_enable_changed(self, state):
-        is_enabled = (state == Qt.Checked.value)
-        if is_enabled:
-            self.chk_enable.setStyleSheet("font-weight: bold; color: #388E3C; font-size: 14px;")
-        else:
-            self.chk_enable.setStyleSheet("font-weight: bold; color: #D32F2F; font-size: 14px;")
-        self.monitoring_toggled.emit(is_enabled)
+        self.lbl_path = QLabel(f"Path: {os.getcwd()}"); self.lbl_path.setStyleSheet("color: #757575; font-size: 11px;")
+        self.lbl_disk = QLabel("Disk Free: Checking..."); self.lbl_disk.setStyleSheet("color: #8E24AA; font-size: 12px;")
+        l_dash.addWidget(self.lbl_path); l_dash.addWidget(self.lbl_disk)
 
-    @Slot(object, object, int, bool)
-    def update_plots(self, waveforms, charges, samples_per_ch, is_visible=True):
-        if not self.chk_enable.isChecked(): return
+        self.lbl_cfg_summary = QLabel("Config Parameters Loading...")
+        self.lbl_cfg_summary.setStyleSheet("background-color: #FFFFFF; border: 1px solid #CCCCCC; padding: 5px;")
+        self.lbl_cfg_summary.setWordWrap(True)
+        l_dash.addWidget(QLabel("Current Configuration:")); l_dash.addWidget(self.lbl_cfg_summary)
+        l_dash.addStretch()
 
-        if isinstance(waveforms, str) and waveforms == "CLEAR":
-            self.hist_data = [np.array([]) for _ in range(4)]
-            for ch in range(4):
-                self.hist_curves[ch].setData([], [])
-                self.wave_curves[ch].setData([], [])
-            return
-
-        if not is_visible:
-            for ch in range(4):
-                self.hist_data[ch] = np.append(self.hist_data[ch], charges[ch])[-50000:]
-            return
-
-        # 💡 [핵심 물리 변환] X축 Time (2ns 간격) & Y축 Voltage (0.488 mV/ADC)
-        time_axis = np.arange(samples_per_ch) * 2.0 
-        voltage_factor = 2000.0 / 4096.0
-
-        for ch in range(4):
-            # 메모리 누수 방지 (최대 5만 개 이벤트)
-            self.hist_data[ch] = np.append(self.hist_data[ch], charges[ch])[-50000:]
-            
-            # 파형 단위 변환 후 렌더링
-            voltage_wave = waveforms[ch, :] * voltage_factor
-            self.wave_curves[ch].setData(time_axis, voltage_wave)
-            
-            if len(self.hist_data[ch]) > 0:
-                # 💡 [동적 범위 할당] 가장 큰 펄스가 들어와도 X축이 알아서 늘어납니다.
-                min_val = min(-100, np.min(self.hist_data[ch]))
-                max_val = max(5000, np.max(self.hist_data[ch]))
-                
-                y, x_edges = np.histogram(self.hist_data[ch], bins=200, range=(min_val, max_val))
-                self.hist_curves[ch].setData(x_edges, y)
+    def update_stats(self, stats, record_length, elapsed_sec):
+        if 'events' in stats:
+            events = stats['events']
+            self.lcd_evt.display(events)
+            size_mb = (events * record_length * 512) / 1048576.0
+            self.lbl_size.setText(f"File Size: {size_mb:.2f} MB")
+            if elapsed_sec > 0:
+                self.lbl_speed.setText(f"Speed: {size_mb / elapsed_sec:.2f} MB/s")
+        
+        if 'rate' in stats: self.lbl_rate.setText(f"Rate: {stats['rate']} Hz")
+        if 'dataq' in stats: self.lbl_q.setText(f"DataQ: {stats['dataq']}")
+        
+        # 💡 [버그 수정] 이벤트 풀 사이즈(1024)를 기준으로 정확하게 계산
+        if 'pool' in stats: 
+            used_blocks = 1024 - stats['pool']
+            self.lbl_p.setText(f"Used Pool: {used_blocks}")
