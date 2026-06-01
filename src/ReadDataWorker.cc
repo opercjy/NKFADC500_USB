@@ -11,7 +11,7 @@ extern "C" {
 
 extern LockFreePipeline g_pipeline;
 extern std::atomic<bool> g_system_running;
-extern std::atomic<bool> g_app_running; // 💡 [추가] 메인 시스템의 종료 시그널 감지용
+extern std::atomic<bool> g_app_running; 
 
 ReadDataWorker::ReadDataWorker(int sid, void*, void*, 
                                const std::string& out_file, int record_length, 
@@ -25,7 +25,6 @@ ReadDataWorker::~ReadDataWorker() { Stop(); }
 void ReadDataWorker::Start() {
     if (is_running_.load(std::memory_order_acquire)) return;
     is_running_.store(true, std::memory_order_release);
-    g_system_running.store(true, std::memory_order_release);
     total_events_.store(0, std::memory_order_relaxed);
     total_bytes_.store(0, std::memory_order_relaxed);
     residual_buffer_.clear(); 
@@ -33,8 +32,8 @@ void ReadDataWorker::Start() {
 }
 
 void ReadDataWorker::Stop() {
-    is_running_.store(false, std::memory_order_release);
-    g_system_running.store(false, std::memory_order_release);
+    // 💡 [패치] 여기서 is_running_을 false로 강제 변경하지 않음! 
+    // 오직 루프 내부의 자연 배수(Drain)가 끝난 후 스스로 false로 변경하도록 대기만 함.
     if (worker_thread_.joinable()) worker_thread_.join();
 }
 
@@ -65,18 +64,18 @@ void ReadDataWorker::ReadLoop() {
     const int PED_END = 80;
 
     EventBlock* mon_ev = nullptr;
-    bool stop_issued = false; // 💡 [추가] 하드웨어 트리거 정지 여부 추적
+    bool stop_issued = false; 
 
     while (is_running_.load(std::memory_order_acquire)) {
         
-        // 💡 [핵심 패치 1] 외부 강제 종료(Ctrl+C 또는 GUI Stop) 감지 시 워커가 직접 H/W 중지
+        // 1. 외부 정지 시그널(Ctrl+C, GUI) 감지 시 H/W 래치 잠금
         if (!g_app_running.load(std::memory_order_acquire) && !stop_issued) {
             std::cout << "\n\033[1;33m[DAQ:INFO] Stop signal received. Halting hardware trigger safely...\033[0m\n";
             KFADC500stop(sid_);
             stop_issued = true;
         }
 
-        // 💡 [핵심 패치 2] 프리셋 달성 감지 (아직 정지 명령이 안 내려진 경우)
+        // 2. 프리셋 이벤트 도달 시 H/W 래치 잠금
         if (!stop_issued) {
             if (preset_events_ > 0 && total_events_.load(std::memory_order_relaxed) >= preset_events_) {
                 KFADC500stop(sid_);
@@ -90,7 +89,6 @@ void ReadDataWorker::ReadLoop() {
             }
         }
 
-        // 💡 USB Endpoint 접근은 오직 이 루프에서만 발생함 (Race Condition 원천 차단)
         int bcount = KFADC500read_BCOUNT(sid_);
         if (bcount >= read_kbytes) {
             DataBlock* bulk = g_pipeline.AcquireFreeBulk();
@@ -137,7 +135,6 @@ void ReadDataWorker::ReadLoop() {
                             mon_ev->payload.charge_array[ch][idx] = ch_charge;
                         }
                         mon_ev->payload.num_events++;
-                        // 💡 [오타 수정 완료] std::memory_order_relaxed 로 정상화
                         total_events_.fetch_add(1, std::memory_order_relaxed);
                     }
                     offset += event_size;
@@ -147,10 +144,11 @@ void ReadDataWorker::ReadLoop() {
                 if (offset > 0) residual_buffer_.erase(residual_buffer_.begin(), residual_buffer_.begin() + offset);
             }
         } else {
-            // 💡 [핵심 패치 3] 정지 명령이 내려진 상태에서 잔여 데이터마저 없다면 완벽히 Drain 된 것
+            // 💡 [핵심 패치 3] H/W 래치가 닫혔고(stop_issued), 더 이상 읽어올 버퍼도 없다면?
+            // 비로소 안전하게 메모리를 내리고 루프를 탈출!
             if (stop_issued) {
                 std::cout << "[DAQ:INFO] Hardware FIFO drained completely.\n";
-                break; // 루프 안전 탈출
+                break; 
             }
             CPU_RELAX();
         }
@@ -176,5 +174,7 @@ void ReadDataWorker::ReadLoop() {
 
     if (mon_ev) g_pipeline.ReturnToFreeEvent(mon_ev); 
     fout.close();
+
+    // 💡 스스로를 종료 상태로 전환하여 main.cc의 무한 대기를 풀어줌
     is_running_.store(false, std::memory_order_release);
 }
