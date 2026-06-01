@@ -149,7 +149,7 @@ void RootProducer::RunBatchMode(std::atomic<bool>& is_running) {
     int event_size_bytes = record_length_ * 512;
     if (event_size_bytes <= 0) return;
 
-    // [핵심 패치] 파일 포인터를 끝으로 밀어 파일 크기를 측정한 후 총 이벤트 수 사전 도출
+    // 💡 [핵심 패치] 파일 포인터를 끝으로 밀어 파일 크기를 측정한 후 총 이벤트 수 사전 도출
     infile.seekg(0, std::ios::end);
     long long file_size = infile.tellg();
     int total_events = (file_size - 8) / event_size_bytes; 
@@ -232,7 +232,7 @@ void RootProducer::RunBatchMode(std::atomic<bool>& is_running) {
         tree_->Fill();
         event_id_++;
 
-        // [패치] GUI 및 터미널 갱신을 위해 비율(%) 출력 기능 추가 (UI 부하를 줄이기 위해 1000 단위 갱신)
+        // 💡 [패치] GUI 및 터미널 갱신을 위해 비율(%) 출력 기능 추가
         if (event_id_ % 1000 == 0 || event_id_ == total_events) {
             double percent = (static_cast<double>(event_id_) / total_events) * 100.0;
             std::cout << "\r\033[K\033[1;34m[PROD:INFO]\033[0m Processing... \033[1;32m" 
