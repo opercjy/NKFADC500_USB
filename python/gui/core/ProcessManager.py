@@ -7,7 +7,7 @@ class ProcessManager(QObject):
     log_signal = Signal(str)
     process_finished = Signal(int)
     stat_signal = Signal(dict) 
-    run_started = Signal() # 💡 실제 측정 시작을 알리는 시그널
+    run_started = Signal() 
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,9 +50,13 @@ class ProcessManager(QObject):
             clean_line = self.ansi_escape.sub('', line).strip()
             if not clean_line: continue
             
-            # 💡 [핵심 패치] 하드웨어가 켜지면 GUI 타이머를 리셋하라는 시그널을 보냄
             if "Trigger FSM Armed" in clean_line:
                 self.run_started.emit()
+
+            # [핵심 패치] 사전 계산된 총 이벤트 수를 캡처
+            if "Total Events to Process" in clean_line:
+                m_tot = re.search(r'Total Events to Process:\s*(\d+)', clean_line)
+                if m_tot: self.stat_signal.emit({'prod_total_events': int(m_tot.group(1))})
 
             if "events saved" in clean_line:
                 m_pe = re.search(r'Processing\.\.\.\s*(\d+)', clean_line)
