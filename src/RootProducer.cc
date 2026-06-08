@@ -105,13 +105,15 @@ void RootProducer::RunDisplayMode(std::atomic<bool>& is_running) {
             int num_ped = ped_end - ped_start;
             
             for (int i = ped_start; i < ped_end; ++i) {
-                uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2);
+                // 💡 [12-bit 비트 마스킹 적용] 상위 상태 플래그 제거
+                uint16_t adc = (*reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2)) & 0x0FFF;
                 ch_pedestal += adc;
             }
             if (num_ped > 0) ch_pedestal /= num_ped;
 
             for (int i = SKIP_BINS; i < samples_per_ch; ++i) {
-                uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2);
+                // 💡 [12-bit 비트 마스킹 적용]
+                uint16_t adc = (*reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2)) & 0x0FFF;
                 double inverted_adc = ch_pedestal - adc;
                 h_wave[ch]->SetBinContent(i + 1, inverted_adc); 
             }
@@ -149,17 +151,13 @@ void RootProducer::RunBatchMode(std::atomic<bool>& is_running) {
     int event_size_bytes = record_length_ * 512;
     if (event_size_bytes <= 0) return;
 
-    // 💡 [핵심 패치] 파일 포인터를 끝으로 밀어 파일 크기를 측정한 후 총 이벤트 수 사전 도출
     infile.seekg(0, std::ios::end);
     long long file_size = infile.tellg();
     int total_events = (file_size - 8) / event_size_bytes; 
-    
-    // 다시 데이터 페이로드의 시작점(헤더 8바이트 이후)으로 복귀
     infile.seekg(8, std::ios::beg);
 
     if (total_events <= 0) return;
 
-    // GUI 갱신을 위해 총 이벤트 수 브로드캐스트
     std::cout << "[PROD:INFO] Total Events to Process: " << total_events << "\n";
 
     int samples_per_ch = (event_size_bytes - 32) / 8;
@@ -198,7 +196,8 @@ void RootProducer::RunBatchMode(std::atomic<bool>& is_running) {
             int num_ped = ped_end - ped_start;
             
             for (int i = ped_start; i < ped_end; ++i) {
-                uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2);
+                // 💡 [12-bit 비트 마스킹 적용]
+                uint16_t adc = (*reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2)) & 0x0FFF;
                 current_ped += adc;
             }
             if (num_ped > 0) current_ped /= num_ped;
@@ -207,7 +206,8 @@ void RootProducer::RunBatchMode(std::atomic<bool>& is_running) {
             double current_peak = -9999.0;
 
             for (int i = 0; i < samples_per_ch; ++i) {
-                uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2);
+                // 💡 [12-bit 비트 마스킹 적용]
+                uint16_t adc = (*reinterpret_cast<const uint16_t*>(evt_bytes + 32 + i * 8 + ch * 2)) & 0x0FFF;
                 double inverted_adc = current_ped - adc;
 
                 if (i >= SKIP_BINS) {
@@ -232,7 +232,6 @@ void RootProducer::RunBatchMode(std::atomic<bool>& is_running) {
         tree_->Fill();
         event_id_++;
 
-        // 💡 [패치] GUI 및 터미널 갱신을 위해 비율(%) 출력 기능 추가
         if (event_id_ % 1000 == 0 || event_id_ == total_events) {
             double percent = (static_cast<double>(event_id_) / total_events) * 100.0;
             std::cout << "\r\033[K\033[1;34m[PROD:INFO]\033[0m Processing... \033[1;32m" 
