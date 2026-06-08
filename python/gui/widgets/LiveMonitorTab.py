@@ -2,25 +2,25 @@ import os
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, 
-                               QPushButton, QLabel, QComboBox)
+                               QPushButton, QLabel, QGroupBox, QComboBox)
 from PySide6.QtCore import Slot, Qt, Signal
 import logging
 
 logger = logging.getLogger(__name__)
 
 # =========================================================================
-# 💡 [신규] 독립적인 팝업 창으로 분리된 Anomaly Inspector
+# 💡 독립 팝업창 (Anomaly Inspector)
 # =========================================================================
 class AnomalyInspectorWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EFT / Anomaly Inspector (Active 5MHz Target)")
         self.resize(1000, 400)
-        self.setWindowFlags(Qt.WindowStaysOnTopHint) # 메인 창 위로 띄우기
+        self.setWindowFlags(Qt.WindowStaysOnTopHint)
+        self.setStyleSheet("background-color: #FFFFFF;") # 배경 강제 흰색
         
         layout = QHBoxLayout(self)
         
-        # 좌측: Time Domain
         self.plot_wave = pg.PlotWidget(title="Captured Anomaly [Time Domain]")
         self.plot_wave.showGrid(x=True, y=True, alpha=0.3)
         self.plot_wave.setLabel('bottom', 'Time Bins (2ns/bin)')
@@ -28,7 +28,6 @@ class AnomalyInspectorWindow(QWidget):
         self.curve_wave = self.plot_wave.plot(pen=pg.mkPen(color='#D32F2F', width=2))
         layout.addWidget(self.plot_wave)
         
-        # 우측: Frequency Domain
         self.plot_fft = pg.PlotWidget(title="FFT Power Spectrum [Freq Domain]")
         self.plot_fft.showGrid(x=True, y=True, alpha=0.3)
         self.plot_fft.setLabel('bottom', 'Frequency', units='MHz')
@@ -43,7 +42,6 @@ class AnomalyInspectorWindow(QWidget):
         self.plot_fft.setTitle(f"FFT Spectrum [Freq Domain] - Source CH{ch}")
         self.curve_fft.setData(freqs_mhz, fft_power)
 
-
 # =========================================================================
 # 메인 Live Monitor 탭
 # =========================================================================
@@ -53,7 +51,12 @@ class LiveMonitorTab(QWidget):
 
     def __init__(self):
         super().__init__()
-        # 오리지널 색감 (Tableau 10 기준 명확한 색상)
+        
+        # 💡 [OCP 패치] main.py를 건드리지 않고 이 탭이 메모리에 올라올 때 전역 테마를 화이트/알록달록으로 세팅
+        pg.setConfigOptions(antialias=True)
+        pg.setConfigOption('background', '#FFFFFF')
+        pg.setConfigOption('foreground', '#333333')
+        
         self.line_colors = ['#1F77B4', '#D62728', '#FF7F0E', '#2CA02C']
         self.brush_colors = [(31, 119, 180, 100), (214, 39, 40, 100), (255, 127, 14, 100), (44, 160, 44, 100)]
         
@@ -61,22 +64,17 @@ class LiveMonitorTab(QWidget):
         os.makedirs(self.dump_dir, exist_ok=True)
         self.save_enabled = False
         
-        self.anomaly_window = None # 팝업 창 인스턴스 보관용
-        
+        self.anomaly_window = None 
         self.init_ui()
 
     def init_ui(self):
         mon_layout = QVBoxLayout(self)
 
-        # -------------------------------------------------------------------------
-        # 상단 컨트롤 패널
-        # -------------------------------------------------------------------------
         ctrl_layout = QHBoxLayout()
         self.chk_enable = QCheckBox("Enable Live Monitoring")
         self.chk_enable.setStyleSheet("font-weight: bold; font-size: 14px;")
         self.chk_enable.stateChanged.connect(self.on_enable_changed)
         
-        # 💡 Anomaly 팝업 스위치
         self.chk_anomaly = QCheckBox("Open Anomaly Inspector")
         self.chk_anomaly.setStyleSheet("font-weight: bold; color: #D32F2F;")
         self.chk_anomaly.stateChanged.connect(self.on_anomaly_checked)
@@ -94,7 +92,6 @@ class LiveMonitorTab(QWidget):
         ctrl_layout.addWidget(self.btn_clear)
         ctrl_layout.addStretch()
         
-        # 실시간 베이스라인 요동 통계 라벨 (메인 화면 상단에 컴팩트하게 배치)
         self.lbl_stats = []
         for ch in range(4):
             lbl = QLabel(f"CH{ch}: Wait...")
@@ -104,9 +101,6 @@ class LiveMonitorTab(QWidget):
             
         mon_layout.addLayout(ctrl_layout)
 
-        # -------------------------------------------------------------------------
-        # 메인 플롯 영역 (오리지널 4채널 레이아웃 복구)
-        # -------------------------------------------------------------------------
         plot_layout = QHBoxLayout()
         
         wave_layout = QVBoxLayout()
@@ -139,7 +133,6 @@ class LiveMonitorTab(QWidget):
     def on_save_mode_changed(self, idx):
         self.save_enabled = (idx == 1)
 
-    # 💡 팝업 창 띄우기/숨기기
     def on_anomaly_checked(self, state):
         is_checked = (state == Qt.Checked.value) or (state == 2)
         if is_checked:
@@ -165,12 +158,10 @@ class LiveMonitorTab(QWidget):
         if not self.chk_enable.isChecked():
             return
 
-        # 1. 오리지널 메인 파형 업데이트
         for ch in range(4):
             if ch in waveforms and len(waveforms[ch]) > 0:
                 self.curves_wave[ch].setData(waveforms[ch][-1])
                 
-            # 통계 라벨 업데이트
             if ch in baseline_stats:
                 st = baseline_stats[ch]
                 if st["count"] > 0:
@@ -179,18 +170,14 @@ class LiveMonitorTab(QWidget):
                     if rate > 2.0:
                         self.lbl_stats[ch].setStyleSheet("color: red; font-weight: bold;")
                     else:
-                        self.lbl_stats[ch].setStyleSheet("color: white;")
+                        self.lbl_stats[ch].setStyleSheet("color: black;")
 
-        # 2. Anomaly 팝업 창으로 데이터 송신 및 디스크 저장
         for ch in range(4):
             if ch in anomaly_data and anomaly_data[ch]:
-                # 가장 마지막에 잡힌 이상 파형 1개
                 wave, freqs_mhz, fft_power = anomaly_data[ch][-1]
                 
-                # 팝업 창이 켜져 있을 때만 그리기
                 if self.anomaly_window and self.anomaly_window.isVisible():
                     self.anomaly_window.update_anomaly(ch, wave, freqs_mhz, fft_power)
                 
-                # 디스크 저장은 팝업창 유무와 관계없이 지정 시 무조건 수행
                 for w, _, _ in anomaly_data[ch]:
                     self.immediate_dump(ch, w)
