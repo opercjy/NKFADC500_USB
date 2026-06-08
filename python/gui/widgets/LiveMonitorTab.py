@@ -9,38 +9,58 @@ import logging
 logger = logging.getLogger(__name__)
 
 # =========================================================================
-# 💡 독립 팝업창 (Anomaly Inspector)
+# 💡 [신규] 오실로스코프 잔상(Persistence) 누적 모드가 적용된 Anomaly Inspector
 # =========================================================================
 class AnomalyInspectorWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EFT / Anomaly Inspector (Active 5MHz Target)")
-        self.resize(1000, 400)
+        self.setWindowTitle("EFT / Anomaly Inspector (High-Res FFT & Persistence Mode)")
+        self.resize(1100, 450)
         self.setWindowFlags(Qt.WindowStaysOnTopHint)
-        self.setStyleSheet("background-color: #FFFFFF;") # 배경 강제 흰색
+        self.setStyleSheet("background-color: #FFFFFF;") 
+        
+        self.max_history = 50 # 💡 UI가 멈추지 않는 선에서 파형 50개 누적(잔상 효과)
+        self.history_waves = []
+        self.history_ffts = []
         
         layout = QHBoxLayout(self)
         
-        self.plot_wave = pg.PlotWidget(title="Captured Anomaly [Time Domain]")
+        self.plot_wave = pg.PlotWidget(title="Accumulated Anomalies [Time Domain]")
         self.plot_wave.showGrid(x=True, y=True, alpha=0.3)
         self.plot_wave.setLabel('bottom', 'Time Bins (2ns/bin)')
         self.plot_wave.setLabel('left', 'ADC Count')
-        self.curve_wave = self.plot_wave.plot(pen=pg.mkPen(color='#D32F2F', width=2))
         layout.addWidget(self.plot_wave)
         
-        self.plot_fft = pg.PlotWidget(title="FFT Power Spectrum [Freq Domain]")
+        self.plot_fft = pg.PlotWidget(title="High-Res FFT Power Spectrum [Freq Domain]")
         self.plot_fft.showGrid(x=True, y=True, alpha=0.3)
         self.plot_fft.setLabel('bottom', 'Frequency', units='MHz')
         self.plot_fft.setLabel('left', 'Power')
         self.plot_fft.setXRange(0, 20)
-        self.curve_fft = self.plot_fft.plot(pen=pg.mkPen(color='#8E24AA', width=2), fillLevel=0, brush=(142,36,170,100))
         layout.addWidget(self.plot_fft)
 
     def update_anomaly(self, ch, wave, freqs_mhz, fft_power):
-        self.plot_wave.setTitle(f"Captured Anomaly [Time Domain] - Source CH{ch}")
-        self.curve_wave.setData(wave)
-        self.plot_fft.setTitle(f"FFT Spectrum [Freq Domain] - Source CH{ch}")
-        self.curve_fft.setData(freqs_mhz, fft_power)
+        self.plot_wave.setTitle(f"Accumulated Anomalies [Time Domain] - Source CH{ch}")
+        self.plot_fft.setTitle(f"High-Res FFT Spectrum [Freq Domain] - Source CH{ch}")
+        
+        # 💡 반투명(Alpha=100) 펜을 사용하여 여러 이벤트가 겹치도록 렌더링
+        wave_curve = self.plot_wave.plot(wave, pen=pg.mkPen(color=(211, 47, 47, 100), width=1.5))
+        fft_curve = self.plot_fft.plot(freqs_mhz, fft_power, pen=pg.mkPen(color=(142, 36, 170, 100), width=1.5))
+        
+        self.history_waves.append(wave_curve)
+        self.history_ffts.append(fft_curve)
+        
+        # 지정된 누적 개수 초과 시 가장 오래된 잔상 삭제
+        if len(self.history_waves) > self.max_history:
+            old_w = self.history_waves.pop(0)
+            old_f = self.history_ffts.pop(0)
+            self.plot_wave.removeItem(old_w)
+            self.plot_fft.removeItem(old_f)
+            
+    def clear_inspector(self):
+        self.plot_wave.clear()
+        self.plot_fft.clear()
+        self.history_waves.clear()
+        self.history_ffts.clear()
 
 # =========================================================================
 # 메인 Live Monitor 탭
@@ -52,7 +72,6 @@ class LiveMonitorTab(QWidget):
     def __init__(self):
         super().__init__()
         
-        # 💡 [OCP 패치] main.py를 건드리지 않고 이 탭이 메모리에 올라올 때 전역 테마를 화이트/알록달록으로 세팅
         pg.setConfigOptions(antialias=True)
         pg.setConfigOption('background', '#FFFFFF')
         pg.setConfigOption('foreground', '#333333')
@@ -84,7 +103,7 @@ class LiveMonitorTab(QWidget):
         self.cmb_save.currentIndexChanged.connect(self.on_save_mode_changed)
         
         self.btn_clear = QPushButton("[ Clear All Spectra ]")
-        self.btn_clear.clicked.connect(self.clear_requested.emit)
+        self.btn_clear.clicked.connect(self.on_clear_requested)
         
         ctrl_layout.addWidget(self.chk_enable)
         ctrl_layout.addWidget(self.chk_anomaly)
@@ -143,6 +162,11 @@ class LiveMonitorTab(QWidget):
             if self.anomaly_window:
                 self.anomaly_window.hide()
 
+    def on_clear_requested(self):
+        if self.anomaly_window:
+            self.anomaly_window.clear_inspector()
+        self.clear_requested.emit()
+
     def immediate_dump(self, ch, wave):
         if not self.save_enabled: return
         filepath = os.path.join(self.dump_dir, f"EFT_Anomaly_CH{ch}.csv")
@@ -174,10 +198,12 @@ class LiveMonitorTab(QWidget):
 
         for ch in range(4):
             if ch in anomaly_data and anomaly_data[ch]:
-                wave, freqs_mhz, fft_power = anomaly_data[ch][-1]
                 
+                # 들어온 아노말리 패킷 전체를 팝업창에 누적 렌더링
                 if self.anomaly_window and self.anomaly_window.isVisible():
-                    self.anomaly_window.update_anomaly(ch, wave, freqs_mhz, fft_power)
+                    for wave, freqs_mhz, fft_power in anomaly_data[ch]:
+                        self.anomaly_window.update_anomaly(ch, wave, freqs_mhz, fft_power)
                 
+                # 디스크 저장
                 for w, _, _ in anomaly_data[ch]:
                     self.immediate_dump(ch, w)
