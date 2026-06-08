@@ -20,7 +20,7 @@ class ZmqWorker(QThread):
         self.socket = None
         
         self.dt = 2e-9 
-        self.ped_samples = 500 
+        self.ped_samples = 80 # 💡 탐지(Trigger) 전용 윈도우
         self.baseline_stats = {ch: {"count": 0, "anomalies": 0, "rolling_median": 0.0} for ch in range(4)}
 
     @Slot(bool)
@@ -36,7 +36,7 @@ class ZmqWorker(QThread):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.SUB)
         self.socket.setsockopt(zmq.LINGER, 0)
-        self.socket.setsockopt(zmq.CONFLATE, 1) # 최신 데이터만 유지 (Drop stale packets)
+        self.socket.setsockopt(zmq.CONFLATE, 1)
         self.socket.connect("tcp://127.0.0.1:5555")
         self.socket.setsockopt_string(zmq.SUBSCRIBE, "DATA")
 
@@ -50,9 +50,6 @@ class ZmqWorker(QThread):
                     frames = self.socket.recv_multipart()
                     if len(frames) == 2 and frames[0] == b"DATA":
                         self.process_data(frames[1])
-                        # 💡 [스로틀링] 사람이 시각적으로 인지하기 편안한 속도(약 3 FPS)로 제한. 
-                        # GUI 멈춤(Freezing) 방지 및 CPU 최적화.
-                        time.sleep(0.3) 
             except Exception as e:
                 logger.error(f"ZMQ Worker Error: {e}")
 
@@ -100,7 +97,7 @@ class ZmqWorker(QThread):
             events_processed += 1
 
         # =========================================================================
-        # 이상 밴드 탐지 및 선택적 FFT 연산
+        # 💡 [제1원리 DSP] 페데스탈 탐지 -> 전체 파형 고해상도 FFT 분해
         # =========================================================================
         anomaly_data = {ch: [] for ch in range(4)}
         
@@ -110,13 +107,13 @@ class ZmqWorker(QThread):
             waves_arr = np.array(waveforms[ch])
             if waves_arr.shape[1] < 100: continue
             
+            # 오직 앞부분 페데스탈 80 샘플만 사용하여 베이스라인 요동 검사
             eval_len = min(self.ped_samples, waves_arr.shape[1])
             analysis_region = waves_arr[:, :eval_len]
             
             q1 = np.percentile(analysis_region, 25, axis=1)
             q3 = np.percentile(analysis_region, 75, axis=1)
             iqr = q3 - q1
-            medians = np.median(analysis_region, axis=1)
             
             lower_bound = q1 - 2.0 * iqr
             upper_bound = q3 + 2.0 * iqr
@@ -125,18 +122,21 @@ class ZmqWorker(QThread):
                 self.baseline_stats[ch]["count"] += 1
                 outliers = np.sum((analysis_region[i] < lower_bound[i]) | (analysis_region[i] > upper_bound[i]))
                 
+                # 5% 이상 이탈 시 트리거
                 if outliers > (eval_len * 0.05):
                     self.baseline_stats[ch]["anomalies"] += 1
                     
-                    wave = waves_arr[i]
-                    wave_dc_removed = wave - np.mean(wave)
+                    # 💡 트리거 발생 시 전체 파형(예: 4096 샘플)을 타겟으로 잡음
+                    full_wave = waves_arr[i]
+                    wave_dc_removed = full_wave - np.mean(full_wave)
                     
+                    # 고해상도 고속 이산 푸리에 변환 (Real FFT)
                     fft_vals = np.fft.rfft(wave_dc_removed)
                     fft_power = np.abs(fft_vals) ** 2 
                     freqs = np.fft.rfftfreq(len(wave_dc_removed), d=self.dt)
                     
                     freqs_mhz = freqs / 1e6
-                    anomaly_data[ch].append((wave, freqs_mhz, fft_power))
+                    anomaly_data[ch].append((full_wave, freqs_mhz, fft_power))
                     
         self.data_ready.emit(waveforms, q_longs, events_processed, self.baseline_stats, anomaly_data)
 
