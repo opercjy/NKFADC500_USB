@@ -66,14 +66,12 @@ void ReadDataWorker::ReadLoop() {
 
     while (is_running_.load(std::memory_order_acquire)) {
         
-        // 1. 외부 강제 종료 시그널 감지 시 즉시 H/W 래치 잠금
         if (!g_app_running.load(std::memory_order_acquire) && !stop_issued) {
             std::cout << "\n\033[1;33m[DAQ:INFO] Stop signal received. Halting hardware trigger safely...\033[0m\n";
             KFADC500stop(sid_);
             stop_issued = true;
         }
 
-        // 2. 프리셋 목표 달성 검증
         if (!stop_issued) {
             if (preset_events_ > 0 && total_events_.load(std::memory_order_relaxed) >= preset_events_) {
                 KFADC500stop(sid_);
@@ -89,7 +87,6 @@ void ReadDataWorker::ReadLoop() {
 
         int bcount = KFADC500read_BCOUNT(sid_);
         
-        // 하드웨어에 16KB 이상의 데이터가 찼을 때만 Bulk Read 수행
         if (bcount >= read_kbytes) {
             DataBlock* bulk = g_pipeline.AcquireFreeBulk();
             if (bulk) {
@@ -119,14 +116,16 @@ void ReadDataWorker::ReadLoop() {
                             int num_ped = ped_end - ped_start;
                             
                             for (int i = ped_start; i < ped_end; ++i) {
-                                uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2));
+                                // 💡 [12-bit 비트 마스킹 적용] 상위 4비트 상태 플래그 제거
+                                uint16_t adc = (*reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2))) & 0x0FFF;
                                 ped += adc;
                             }
                             if (num_ped > 0) ped /= num_ped;
 
                             double ch_charge = 0;
                             for (int i = SKIP_BINS; i < samples_per_ch; ++i) {
-                                uint16_t adc = *reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2));
+                                // 💡 [12-bit 비트 마스킹 적용]
+                                uint16_t adc = (*reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2))) & 0x0FFF;
                                 double inverted_adc = ped - adc;
                                 ch_charge += inverted_adc;
                                 if (i < 4096) mon_ev->payload.last_waveform[ch][i] = inverted_adc;
@@ -144,7 +143,6 @@ void ReadDataWorker::ReadLoop() {
                 if (offset > 0) residual_buffer_.erase(residual_buffer_.begin(), residual_buffer_.begin() + offset);
             }
         } else {
-            // 정지 명령이 내려졌고 더 이상 읽어올 16KB 블록이 없다면 루프 탈출
             if (stop_issued) {
                 std::cout << "[DAQ:INFO] Hardware FIFO drained completely.\n";
                 break; 
@@ -152,7 +150,6 @@ void ReadDataWorker::ReadLoop() {
             CPU_RELAX();
         }
 
-        // ZMQ 모니터링 주기적(100ms) 전송 로직
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_zmq_time).count() >= 100) {
             if (!mon_ev) {
@@ -174,7 +171,5 @@ void ReadDataWorker::ReadLoop() {
 
     if (mon_ev) g_pipeline.ReturnToFreeEvent(mon_ev); 
     fout.close();
-
-    // 💡 [치명적 오타 수정] std::memory_order_release 로 정상화 완료
     is_running_.store(false, std::memory_order_release);
 }
