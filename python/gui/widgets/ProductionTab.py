@@ -22,7 +22,6 @@ class ProductionTab(QWidget):
         self.prod_summary_cache = {} 
         self.current_total_events = 0 
         
-        # 💡 [영속성 패치] OS 레벨 환경설정 객체
         self.settings = QSettings("NoticeKorea", "KFADC500_GUI")
         self.init_ui()
 
@@ -31,7 +30,6 @@ class ProductionTab(QWidget):
 
         grp_file = QGroupBox("1. Target Data File (.dat)")
         h_file = QHBoxLayout()
-        # 💡 [영속성 패치] 
         saved_prod = self.settings.value("prod_target_file", "")
         self.in_prod_file = QLineEdit(saved_prod)
         
@@ -96,12 +94,12 @@ class ProductionTab(QWidget):
         f, _ = QFileDialog.getOpenFileName(self, "Select Raw Data to Process", "data", "Data Files (*.dat)")
         if f: 
             self.in_prod_file.setText(f)
-            self.settings.setValue("prod_target_file", f) # 즉시 기억
+            self.settings.setValue("prod_target_file", f) 
 
     def start_prod_batch(self):
         f = self.in_prod_file.text()
         if not f: return
-        self.settings.setValue("prod_target_file", f) # 수동 입력 대비
+        self.settings.setValue("prod_target_file", f)
 
         self.btn_batch_run.setEnabled(False)
         self.btn_batch_stop.setEnabled(True)
@@ -120,7 +118,7 @@ class ProductionTab(QWidget):
     def start_prod_inter(self):
         f = self.in_prod_file.text()
         if not f: return
-        self.settings.setValue("prod_target_file", f) # 수동 입력 대비
+        self.settings.setValue("prod_target_file", f) 
 
         self.btn_inter_run.setEnabled(False)
         self.btn_iprev.setEnabled(True); self.btn_inext.setEnabled(True)
@@ -130,7 +128,8 @@ class ProductionTab(QWidget):
     def prompt_jump(self):
         num, ok = QInputDialog.getInt(self, "Jump to Event", "Enter Event ID:")
         if ok: 
-            self.prod_manager.write_stdin(f"j\n{num}")
+            # 💡 [핵심 패치] \n 대신 공백을 사용하여 C++의 "j <id>" 파싱 규격과 완벽히 일치시킴
+            self.prod_manager.write_stdin(f"j {num}")
 
     def quit_interactive(self):
         self.prod_manager.write_stdin("q")
