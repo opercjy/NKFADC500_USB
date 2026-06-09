@@ -2,15 +2,12 @@ import os
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, 
-                               QPushButton, QLabel, QGroupBox, QComboBox)
+                               QPushButton, QLabel, QComboBox)
 from PySide6.QtCore import Slot, Qt, Signal
 import logging
 
 logger = logging.getLogger(__name__)
 
-# =========================================================================
-# 💡 [신규] 오실로스코프 잔상(Persistence) 누적 모드가 적용된 Anomaly Inspector
-# =========================================================================
 class AnomalyInspectorWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -19,7 +16,7 @@ class AnomalyInspectorWindow(QWidget):
         self.setWindowFlags(Qt.WindowStaysOnTopHint)
         self.setStyleSheet("background-color: #FFFFFF;") 
         
-        self.max_history = 50 # 💡 UI가 멈추지 않는 선에서 파형 50개 누적(잔상 효과)
+        self.max_history = 50 
         self.history_waves = []
         self.history_ffts = []
         
@@ -42,14 +39,12 @@ class AnomalyInspectorWindow(QWidget):
         self.plot_wave.setTitle(f"Accumulated Anomalies [Time Domain] - Source CH{ch}")
         self.plot_fft.setTitle(f"High-Res FFT Spectrum [Freq Domain] - Source CH{ch}")
         
-        # 💡 반투명(Alpha=100) 펜을 사용하여 여러 이벤트가 겹치도록 렌더링
         wave_curve = self.plot_wave.plot(wave, pen=pg.mkPen(color=(211, 47, 47, 100), width=1.5))
         fft_curve = self.plot_fft.plot(freqs_mhz, fft_power, pen=pg.mkPen(color=(142, 36, 170, 100), width=1.5))
         
         self.history_waves.append(wave_curve)
         self.history_ffts.append(fft_curve)
         
-        # 지정된 누적 개수 초과 시 가장 오래된 잔상 삭제
         if len(self.history_waves) > self.max_history:
             old_w = self.history_waves.pop(0)
             old_f = self.history_ffts.pop(0)
@@ -62,9 +57,6 @@ class AnomalyInspectorWindow(QWidget):
         self.history_waves.clear()
         self.history_ffts.clear()
 
-# =========================================================================
-# 메인 Live Monitor 탭
-# =========================================================================
 class LiveMonitorTab(QWidget):
     monitoring_toggled = Signal(bool)
     clear_requested = Signal()
@@ -83,6 +75,7 @@ class LiveMonitorTab(QWidget):
         os.makedirs(self.dump_dir, exist_ok=True)
         self.save_enabled = False
         
+        self.charge_history = {ch: [] for ch in range(4)}
         self.anomaly_window = None 
         self.init_ui()
 
@@ -113,7 +106,7 @@ class LiveMonitorTab(QWidget):
         
         self.lbl_stats = []
         for ch in range(4):
-            lbl = QLabel(f"CH{ch}: Wait...")
+            lbl = QLabel(f"CH{ch}: Normal")
             lbl.setStyleSheet("padding: 2px; border: 1px solid gray;")
             self.lbl_stats.append(lbl)
             ctrl_layout.addWidget(lbl)
@@ -128,6 +121,7 @@ class LiveMonitorTab(QWidget):
         for ch in range(4):
             plot = pg.PlotWidget(title=f"CH{ch} Live Waveform")
             plot.showGrid(x=True, y=True, alpha=0.3)
+            # 💡 하드코딩되었던 Y축 오토스케일 방지 코드(setYRange) 삭제 완료
             self.wave_plots.append(plot)
             self.curves_wave[ch] = plot.plot(pen=pg.mkPen(color=self.line_colors[ch], width=1.5))
             wave_layout.addWidget(plot)
@@ -163,6 +157,9 @@ class LiveMonitorTab(QWidget):
                 self.anomaly_window.hide()
 
     def on_clear_requested(self):
+        for ch in range(4):
+            self.charge_history[ch].clear()
+            self.hist_curves[ch].setData([], [])
         if self.anomaly_window:
             self.anomaly_window.clear_inspector()
         self.clear_requested.emit()
@@ -177,33 +174,33 @@ class LiveMonitorTab(QWidget):
         except Exception as e:
             logger.error(f"Dump Failed: {e}")
 
-    @Slot(object, object, int, dict, dict)
-    def update_plots(self, waveforms, q_longs, events_processed, baseline_stats, anomaly_data):
-        if not self.chk_enable.isChecked():
+    @Slot(object, object, bool, dict)
+    def update_plots(self, waveforms, charges, is_visible, anomaly_data):
+        if not self.chk_enable.isChecked() or not is_visible:
             return
 
         for ch in range(4):
             if ch in waveforms and len(waveforms[ch]) > 0:
                 self.curves_wave[ch].setData(waveforms[ch][-1])
                 
-            if ch in baseline_stats:
-                st = baseline_stats[ch]
-                if st["count"] > 0:
-                    rate = (st["anomalies"] / st["count"]) * 100
-                    self.lbl_stats[ch].setText(f"CH{ch} Err: {rate:.1f}%")
-                    if rate > 2.0:
-                        self.lbl_stats[ch].setStyleSheet("color: red; font-weight: bold;")
-                    else:
-                        self.lbl_stats[ch].setStyleSheet("color: black;")
+            if ch in charges and len(charges[ch]) > 0:
+                self.charge_history[ch].extend(charges[ch])
+                self.charge_history[ch] = self.charge_history[ch][-10000:]
+                y, x = np.histogram(self.charge_history[ch], bins=100)
+                self.hist_curves[ch].setData(x, y)
+                
+            if ch in anomaly_data and len(anomaly_data[ch]) > 0:
+                self.lbl_stats[ch].setText(f"CH{ch} Anomaly Det!")
+                self.lbl_stats[ch].setStyleSheet("color: red; font-weight: bold;")
+            else:
+                self.lbl_stats[ch].setText(f"CH{ch} Normal")
+                self.lbl_stats[ch].setStyleSheet("color: black;")
 
         for ch in range(4):
             if ch in anomaly_data and anomaly_data[ch]:
-                
-                # 들어온 아노말리 패킷 전체를 팝업창에 누적 렌더링
                 if self.anomaly_window and self.anomaly_window.isVisible():
                     for wave, freqs_mhz, fft_power in anomaly_data[ch]:
                         self.anomaly_window.update_anomaly(ch, wave, freqs_mhz, fft_power)
                 
-                # 디스크 저장
                 for w, _, _ in anomaly_data[ch]:
                     self.immediate_dump(ch, w)
