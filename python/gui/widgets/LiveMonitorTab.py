@@ -121,7 +121,6 @@ class LiveMonitorTab(QWidget):
         for ch in range(4):
             plot = pg.PlotWidget(title=f"CH{ch} Live Waveform")
             plot.showGrid(x=True, y=True, alpha=0.3)
-            # 💡 하드코딩되었던 Y축 오토스케일 방지 코드(setYRange) 삭제 완료
             self.wave_plots.append(plot)
             self.curves_wave[ch] = plot.plot(pen=pg.mkPen(color=self.line_colors[ch], width=1.5))
             wave_layout.addWidget(plot)
@@ -174,7 +173,8 @@ class LiveMonitorTab(QWidget):
         except Exception as e:
             logger.error(f"Dump Failed: {e}")
 
-    @Slot(object, object, bool, dict)
+    # 💡 [핵심 패치] 마지막 인자를 object로 변경하여 수신
+    @Slot(object, object, bool, object)
     def update_plots(self, waveforms, charges, is_visible, anomaly_data):
         if not self.chk_enable.isChecked() or not is_visible:
             return
