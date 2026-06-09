@@ -58,7 +58,6 @@ class AnomalyInspectorWindow(QWidget):
         self.history_waves.clear()
         self.history_ffts.clear()
 
-
 class LiveMonitorTab(QWidget):
     monitoring_toggled = Signal(bool)
     clear_requested = Signal()
@@ -84,7 +83,7 @@ class LiveMonitorTab(QWidget):
         self.init_ui()
 
     def reload_config_and_update_lines(self):
-        """💡 Config를 파싱하여 점선의 위치를 물리적으로 정확하게 재배치합니다."""
+        """💡 Config를 파싱하여 점선의 위치와 Y축 뷰포트를 물리적으로 정확하게 재배치합니다."""
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'config', 'kfadc500.config')
         if not os.path.exists(config_path):
             config_path = "config/kfadc500.config"
@@ -103,10 +102,17 @@ class LiveMonitorTab(QWidget):
                     # 1. 붉은색 베이스라인 설정
                     self.baseline_lines[ch].setValue(off)
                     
-                    # 2. 오렌지색 트리거 한계선 설정 (극성에 따른 전압 강하 방향 적용)
+                    # 2. 오렌지색 트리거 한계선 설정
                     trigger_val = (off - thr) if pol == 0 else (off + thr)
                     self.threshold_lines[ch].setValue(trigger_val)
                     
+                    # 3. 💡 [핵심 패치] 스마트 Y축 뷰포트 스케일링
+                    # 0부터 시작하여 파형이 납작하게 찌그러지는 현상을 방지하고, 펄스 방향으로 공간을 열어줍니다.
+                    if pol == 0: # Negative (하향 펄스)
+                        self.wave_plots[ch].setYRange(off - 300, off + 50)
+                    else:        # Positive (상향 펄스)
+                        self.wave_plots[ch].setYRange(off - 50, off + 300)
+                        
                     self.lbl_config_info[ch].setText(f"[ Off: {off:.0f} | Thr: {thr:.0f} ]")
         except Exception as e:
             logger.error(f"LiveMonitor Config Parse Error: {e}")
@@ -150,28 +156,25 @@ class LiveMonitorTab(QWidget):
         wave_layout = QVBoxLayout()
         self.wave_plots = []
         self.curves_wave = {}
-        self.baseline_lines = {}  # 붉은색 기준선
-        self.threshold_lines = {} # 💡 오렌지색 트리거선
-        self.lbl_config_info = {} # 💡 파형 뷰어 내부 정보 라벨
+        self.baseline_lines = {} 
+        self.threshold_lines = {}
+        self.lbl_config_info = {} 
         
         for ch in range(4):
             plot = pg.PlotWidget(title=f"CH{ch} Live Waveform (Raw)")
             plot.showGrid(x=True, y=True, alpha=0.3)
             
-            # 베이스라인 (빨간 점선)
             bline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('#D32F2F', width=2, style=Qt.DashLine))
             plot.addItem(bline)
             self.baseline_lines[ch] = bline
             
-            # 💡 트리거 한계선 (오렌지색 촘촘한 점선)
             tline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('#F57C00', width=2, style=Qt.DotLine))
             plot.addItem(tline)
             self.threshold_lines[ch] = tline
             
-            # 설정 정보 텍스트 오버레이
             info_label = pg.TextItem(text="Loading...", color='#1565C0', anchor=(0, 1))
             plot.addItem(info_label)
-            info_label.setPos(0, 0) # 우측 상단 배치를 위해 나중에 뷰포트 고정 처리 가능
+            info_label.setPos(0, 0) 
             self.lbl_config_info[ch] = info_label
             
             self.wave_plots.append(plot)
@@ -195,7 +198,7 @@ class LiveMonitorTab(QWidget):
     def on_enable_changed(self, state):
         is_checked = (state == Qt.Checked.value) or (state == 2)
         if is_checked:
-            self.reload_config_and_update_lines() # 💡 켤 때마다 최신 Config 적용
+            self.reload_config_and_update_lines()
         self.monitoring_toggled.emit(is_checked)
 
     def on_save_mode_changed(self, idx):
