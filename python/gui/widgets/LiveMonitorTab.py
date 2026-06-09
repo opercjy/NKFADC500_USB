@@ -1,4 +1,5 @@
 import os
+import configparser
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, 
@@ -22,7 +23,7 @@ class AnomalyInspectorWindow(QWidget):
         
         layout = QHBoxLayout(self)
         
-        self.plot_wave = pg.PlotWidget(title="Accumulated Anomalies [Time Domain]")
+        self.plot_wave = pg.PlotWidget(title="Accumulated Anomalies [Time Domain (Raw)]")
         self.plot_wave.showGrid(x=True, y=True, alpha=0.3)
         self.plot_wave.setLabel('bottom', 'Time Bins (2ns/bin)')
         self.plot_wave.setLabel('left', 'ADC Count')
@@ -57,6 +58,7 @@ class AnomalyInspectorWindow(QWidget):
         self.history_waves.clear()
         self.history_ffts.clear()
 
+
 class LiveMonitorTab(QWidget):
     monitoring_toggled = Signal(bool)
     clear_requested = Signal()
@@ -77,7 +79,37 @@ class LiveMonitorTab(QWidget):
         
         self.charge_history = {ch: [] for ch in range(4)}
         self.anomaly_window = None 
+        
+        self.hw_config = {ch: {"offset": 3500.0, "polarity": 0, "threshold": 20.0} for ch in range(4)}
         self.init_ui()
+
+    def reload_config_and_update_lines(self):
+        """💡 Config를 파싱하여 점선의 위치를 물리적으로 정확하게 재배치합니다."""
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'config', 'kfadc500.config')
+        if not os.path.exists(config_path):
+            config_path = "config/kfadc500.config"
+            
+        parser = configparser.ConfigParser()
+        try:
+            parser.read(config_path)
+            for ch in range(4):
+                sec = f"CH{ch}"
+                if parser.has_section(sec):
+                    off = parser.getfloat(sec, "OFFSET", fallback=3500.0)
+                    pol = parser.getint(sec, "POLARITY", fallback=0)
+                    thr = parser.getfloat(sec, "THRESHOLD", fallback=20.0)
+                    self.hw_config[ch] = {"offset": off, "polarity": pol, "threshold": thr}
+                    
+                    # 1. 붉은색 베이스라인 설정
+                    self.baseline_lines[ch].setValue(off)
+                    
+                    # 2. 오렌지색 트리거 한계선 설정 (극성에 따른 전압 강하 방향 적용)
+                    trigger_val = (off - thr) if pol == 0 else (off + thr)
+                    self.threshold_lines[ch].setValue(trigger_val)
+                    
+                    self.lbl_config_info[ch].setText(f"[ Off: {off:.0f} | Thr: {thr:.0f} ]")
+        except Exception as e:
+            logger.error(f"LiveMonitor Config Parse Error: {e}")
 
     def init_ui(self):
         mon_layout = QVBoxLayout(self)
@@ -106,7 +138,7 @@ class LiveMonitorTab(QWidget):
         
         self.lbl_stats = []
         for ch in range(4):
-            lbl = QLabel(f"CH{ch}: Normal")
+            lbl = QLabel(f"CH{ch}: Wait...")
             lbl.setStyleSheet("padding: 2px; border: 1px solid gray;")
             self.lbl_stats.append(lbl)
             ctrl_layout.addWidget(lbl)
@@ -118,9 +150,30 @@ class LiveMonitorTab(QWidget):
         wave_layout = QVBoxLayout()
         self.wave_plots = []
         self.curves_wave = {}
+        self.baseline_lines = {}  # 붉은색 기준선
+        self.threshold_lines = {} # 💡 오렌지색 트리거선
+        self.lbl_config_info = {} # 💡 파형 뷰어 내부 정보 라벨
+        
         for ch in range(4):
-            plot = pg.PlotWidget(title=f"CH{ch} Live Waveform")
+            plot = pg.PlotWidget(title=f"CH{ch} Live Waveform (Raw)")
             plot.showGrid(x=True, y=True, alpha=0.3)
+            
+            # 베이스라인 (빨간 점선)
+            bline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('#D32F2F', width=2, style=Qt.DashLine))
+            plot.addItem(bline)
+            self.baseline_lines[ch] = bline
+            
+            # 💡 트리거 한계선 (오렌지색 촘촘한 점선)
+            tline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('#F57C00', width=2, style=Qt.DotLine))
+            plot.addItem(tline)
+            self.threshold_lines[ch] = tline
+            
+            # 설정 정보 텍스트 오버레이
+            info_label = pg.TextItem(text="Loading...", color='#1565C0', anchor=(0, 1))
+            plot.addItem(info_label)
+            info_label.setPos(0, 0) # 우측 상단 배치를 위해 나중에 뷰포트 고정 처리 가능
+            self.lbl_config_info[ch] = info_label
+            
             self.wave_plots.append(plot)
             self.curves_wave[ch] = plot.plot(pen=pg.mkPen(color=self.line_colors[ch], width=1.5))
             wave_layout.addWidget(plot)
@@ -129,7 +182,7 @@ class LiveMonitorTab(QWidget):
         self.hist_plots = []
         self.hist_curves = {}
         for ch in range(4):
-            plot = pg.PlotWidget(title=f"CH{ch} Charge Spectrum")
+            plot = pg.PlotWidget(title=f"CH{ch} Charge Spectrum (Inverted)")
             plot.showGrid(x=True, y=True, alpha=0.3)
             self.hist_plots.append(plot)
             self.hist_curves[ch] = plot.plot(stepMode="center", fillLevel=0, brush=self.brush_colors[ch], pen=self.line_colors[ch])
@@ -140,7 +193,10 @@ class LiveMonitorTab(QWidget):
         mon_layout.addLayout(plot_layout, stretch=1)
 
     def on_enable_changed(self, state):
-        self.monitoring_toggled.emit((state == Qt.Checked.value) or (state == 2))
+        is_checked = (state == Qt.Checked.value) or (state == 2)
+        if is_checked:
+            self.reload_config_and_update_lines() # 💡 켤 때마다 최신 Config 적용
+        self.monitoring_toggled.emit(is_checked)
 
     def on_save_mode_changed(self, idx):
         self.save_enabled = (idx == 1)
@@ -173,7 +229,6 @@ class LiveMonitorTab(QWidget):
         except Exception as e:
             logger.error(f"Dump Failed: {e}")
 
-    # 💡 [핵심 패치] 마지막 인자를 object로 변경하여 수신
     @Slot(object, object, bool, object)
     def update_plots(self, waveforms, charges, is_visible, anomaly_data):
         if not self.chk_enable.isChecked() or not is_visible:
