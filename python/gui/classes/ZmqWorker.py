@@ -1,3 +1,5 @@
+import os
+import configparser
 import numpy as np
 import zmq
 import time
@@ -7,7 +9,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 class ZmqWorker(QThread):
-    # 시그널 규격: waveforms, charges, telemetry, anomaly_data
     data_ready = Signal(object, object, object, object)
 
     def __init__(self):
@@ -17,21 +18,43 @@ class ZmqWorker(QThread):
         self.context = None
         self.socket = None
         self.dt = 2e-9 
-        self.baseline_stats = {ch: {"count": 0, "anomalies": 0} for ch in range(4)}
         
-        # 💡 [버그 복구] 트리거 레이트(Hz) 계산용 변수 부활
+        # 💡 [SSOT] 하드웨어 Config 저장소
+        self.hw_config = {ch: {"offset": 3500.0, "polarity": 0, "threshold": 20.0} for ch in range(4)}
+        self.baseline_stats = {ch: {"count": 0, "anomalies": 0, "real_mean": 3500.0} for ch in range(4)}
+        
         self.last_telemetry_time = time.time()
         self.last_events = 0
         self.current_rate = 0.0
 
+    def reload_config(self):
+        """💡 kfadc500.config 파일을 파싱하여 하드웨어 설정값을 동기화합니다."""
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'config', 'kfadc500.config')
+        if not os.path.exists(config_path):
+            config_path = "config/kfadc500.config" # Fallback path
+            
+        parser = configparser.ConfigParser()
+        try:
+            parser.read(config_path)
+            for ch in range(4):
+                sec = f"CH{ch}"
+                if parser.has_section(sec):
+                    self.hw_config[ch]["offset"] = parser.getfloat(sec, "OFFSET", fallback=3500.0)
+                    self.hw_config[ch]["polarity"] = parser.getint(sec, "POLARITY", fallback=0)
+                    self.hw_config[ch]["threshold"] = parser.getfloat(sec, "THRESHOLD", fallback=20.0)
+        except Exception as e:
+            logger.error(f"ZmqWorker Config Parse Error: {e}")
+
     @Slot(bool)
     def set_monitoring_state(self, state):
         self.monitoring_enabled = state
+        if state:
+            self.reload_config() # 모니터링 시작 시 최신 Config 로드
 
     @Slot()
     def request_clear(self):
         for ch in range(4):
-            self.baseline_stats[ch] = {"count": 0, "anomalies": 0}
+            self.baseline_stats[ch] = {"count": 0, "anomalies": 0, "real_mean": self.hw_config[ch]["offset"]}
 
     def run(self):
         self.context = zmq.Context()
@@ -42,8 +65,6 @@ class ZmqWorker(QThread):
         self.socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
         while self.running:
-            # 💡 [핵심 패치] 모니터링 체크박스 유무와 상관없이 무조건 ZMQ 패킷은 수신합니다!
-            # 그래야 우측 대시보드(Telemetry)가 항상 살아 숨쉽니다.
             try:
                 if self.socket.poll(100):
                     msg = self.socket.recv(flags=zmq.NOBLOCK)
@@ -65,10 +86,9 @@ class ZmqWorker(QThread):
         queue_size = int(header[3])
         pool_free_size = int(header[4])
         
-        # 💡 [버그 복구] 정확한 초당 트리거 레이트(Hz) 계산 로직 복원
         current_time = time.time()
         elapsed = current_time - self.last_telemetry_time
-        if elapsed >= 0.5: # 0.5초마다 갱신
+        if elapsed >= 0.5: 
             self.current_rate = (total_events - self.last_events) / elapsed
             self.last_telemetry_time = current_time
             self.last_events = total_events
@@ -80,7 +100,6 @@ class ZmqWorker(QThread):
             'pool': pool_free_size
         }
         
-        # 💡 [최적화 유지] 모니터링 체크박스가 꺼져있으면 무거운 파형 추출은 생략하고 텔레메트리만 보냅니다.
         if not self.monitoring_enabled or num_events == 0 or samples_per_ch == 0:
             self.data_ready.emit("TELEMETRY_ONLY", None, telemetry, {})
             return
@@ -102,28 +121,29 @@ class ZmqWorker(QThread):
             waveforms[ch] = [valid_wave]
             charges[ch] = charge_array[ch, :num_events].tolist()
             
-            if len(valid_wave) > 100:
-                analysis_region = valid_wave[20:80] 
-                if len(analysis_region) > 10:
-                    q1 = np.percentile(analysis_region, 25)
-                    q3 = np.percentile(analysis_region, 75)
-                    iqr = q3 - q1
+            # 💡 [제1원리 탐지] Config의 OFFSET과 THRESHOLD를 기준으로 직접 평가
+            hw_offset = self.hw_config[ch]["offset"]
+            hw_thr = self.hw_config[ch]["threshold"]
+            
+            if len(valid_wave) > 80:
+                pedestal_region = valid_wave[20:80]
+                self.baseline_stats[ch]["count"] += 1
+                self.baseline_stats[ch]["real_mean"] = float(np.mean(pedestal_region))
+                
+                # 방사선 펄스가 없는 프리트리거 구간의 요동이 설정된 문턱값의 80%를 넘으면 공통모드 EFT 노이즈로 확정
+                max_deviation = np.max(np.abs(pedestal_region - hw_offset))
+                if max_deviation > (hw_thr * 0.8): 
+                    self.baseline_stats[ch]["anomalies"] += 1
                     
-                    safe_iqr = iqr if iqr > 0 else 1.0 
-                    lower_bound = q1 - 2.0 * safe_iqr
-                    upper_bound = q3 + 2.0 * safe_iqr
-                    
-                    outliers = np.sum((analysis_region < lower_bound) | (analysis_region > upper_bound))
-                    
-                    if outliers > (len(analysis_region) * 0.1): 
-                        self.baseline_stats[ch]["anomalies"] += 1
-                        wave_dc_removed = valid_wave - np.mean(valid_wave)
-                        fft_vals = np.fft.rfft(wave_dc_removed)
-                        fft_power = np.abs(fft_vals) ** 2 
-                        freqs = np.fft.rfftfreq(len(wave_dc_removed), d=self.dt)
-                        freqs_mhz = freqs / 1e6
-                        anomaly_data[ch].append((valid_wave, freqs_mhz, fft_power))
+                    # FFT 수행 시 동적 평균이 아닌 '하드웨어 절대 오프셋'을 빼서 진짜 흔들림의 크기를 주파수화 함
+                    wave_dc_removed = valid_wave - hw_offset
+                    fft_vals = np.fft.rfft(wave_dc_removed)
+                    fft_power = np.abs(fft_vals) ** 2 
+                    freqs = np.fft.rfftfreq(len(wave_dc_removed), d=self.dt)
+                    freqs_mhz = freqs / 1e6
+                    anomaly_data[ch].append((valid_wave, freqs_mhz, fft_power))
 
+        telemetry['baseline'] = self.baseline_stats
         self.data_ready.emit(waveforms, charges, telemetry, anomaly_data)
 
     def stop(self):
