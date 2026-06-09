@@ -23,7 +23,6 @@ class RunControlTab(QWidget):
         self.scan_queue = []
         self.active_config_text = ""
 
-        # 💡 [영속성 패치] OS 레벨 환경설정 객체 초기화
         self.settings = QSettings("NoticeKorea", "KFADC500_GUI")
 
         self.init_ui()
@@ -58,7 +57,6 @@ class RunControlTab(QWidget):
 
         h_name = QHBoxLayout()
         h_name.addWidget(QLabel("Prefix:"))
-        # 💡 [영속성 패치] 저장된 Prefix 로드
         saved_prefix = self.settings.value("run_prefix", "test")
         self.in_prefix = QLineEdit(saved_prefix) 
         h_name.addWidget(self.in_prefix)
@@ -72,7 +70,6 @@ class RunControlTab(QWidget):
         h_name.addWidget(QLabel("Tag:"))
         self.cb_tag = QComboBox()
         self.cb_tag.addItems(["physics", "calibration", "test", "pedestal", "dark_noise"])
-        # 💡 [영속성 패치] 저장된 Tag 로드
         saved_tag = self.settings.value("run_tag", "physics")
         idx = self.cb_tag.findText(saved_tag)
         if idx >= 0: self.cb_tag.setCurrentIndex(idx)
@@ -139,7 +136,6 @@ class RunControlTab(QWidget):
         basename = os.path.basename(last_file) 
         name_no_ext = os.path.splitext(basename)[0] 
         match = re.search(r'_(?P<num>\d+)_?(?P<tag>[a-zA-Z_]+)?(?:_sub\d+)?$', name_no_ext)
-        # DB에 기록이 있다면 DB 데이터가 최우선 (Run 번호 자동 증가를 위함)
         if match:
             prefix = name_no_ext[:match.start()]
             if prefix: self.in_prefix.setText(prefix)
@@ -223,7 +219,6 @@ class RunControlTab(QWidget):
         self.log_callback(f"<span style='color:#1976D2; font-weight:bold;'>[SYSTEM] Ready for next run. Target Run Number: {self.sp_run_no.value():03d}</span>")
 
     def save_ui_state_to_os(self):
-        # 💡 [영속성 패치] 실행을 누르는 순간 모든 UI 상태를 박제
         self.settings.setValue("run_config_file", self.in_cfg.text())
         self.settings.setValue("run_output_dir", self.in_out_dir.text())
         self.settings.setValue("run_prefix", self.in_prefix.text())
@@ -330,8 +325,16 @@ class RunControlTab(QWidget):
             self.auto_mode = "NONE"; self.dash.lbl_mode.setText("MODE: IDLE"); self.start_time = None
             self.btn_start.setEnabled(True); self.btn_scan.setEnabled(True); self.btn_stop.setEnabled(False)
 
+    # 💡 [핵심 패치] 트리거 레이트를 ZmqWorker가 아닌, 전체 시간 기반으로 계산하여 완벽한 안정성 보장
     def update_external_stats(self, stats):
         if 'events' in stats: 
             self.last_events = stats['events']
+            
         elapsed_sec = (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
+        
+        if elapsed_sec > 0:
+            stats['rate'] = round(self.last_events / elapsed_sec, 1)
+        else:
+            stats['rate'] = 0.0
+            
         self.dash.update_stats(stats, self.config_record_len, elapsed_sec)
