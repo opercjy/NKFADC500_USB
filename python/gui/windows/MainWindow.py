@@ -101,11 +101,8 @@ class MainWindow(QMainWindow):
         self.clock_timer.timeout.connect(self.global_clock_tick)
         self.clock_timer.start(1000)
 
-    # =========================================================================
-    # 💡 [치명적 버그 수정] Signal 핀 매핑 완전 동기화
-    # ZmqWorker에서 보내는 (waveforms, charges, telemetry, anomaly_data) 규격과 100% 일치시킴
-    # =========================================================================
-    @Slot(object, object, dict, dict)
+    # 💡 [핵심 패치] 모든 인자를 object로 수신
+    @Slot(object, object, object, object)
     def dispatch_plot_data(self, waveforms, charges, telemetry, anomaly_data):
         if telemetry:
             self.tab_run.update_external_stats(telemetry)
