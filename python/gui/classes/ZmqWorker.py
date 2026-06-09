@@ -19,19 +19,16 @@ class ZmqWorker(QThread):
         self.socket = None
         self.dt = 2e-9 
         
-        # 💡 [SSOT] 하드웨어 Config 저장소
         self.hw_config = {ch: {"offset": 3500.0, "polarity": 0, "threshold": 20.0} for ch in range(4)}
         self.baseline_stats = {ch: {"count": 0, "anomalies": 0, "real_mean": 3500.0} for ch in range(4)}
         
-        self.last_telemetry_time = time.time()
-        self.last_events = 0
-        self.current_rate = 0.0
+        self.last_render_time = time.time()
+        self.render_interval = 0.5 # 💡 [핵심 패치] 파형 렌더링 0.5초(2FPS) 주기로 스로틀링
 
     def reload_config(self):
-        """💡 kfadc500.config 파일을 파싱하여 하드웨어 설정값을 동기화합니다."""
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'config', 'kfadc500.config')
         if not os.path.exists(config_path):
-            config_path = "config/kfadc500.config" # Fallback path
+            config_path = "config/kfadc500.config"
             
         parser = configparser.ConfigParser()
         try:
@@ -49,7 +46,7 @@ class ZmqWorker(QThread):
     def set_monitoring_state(self, state):
         self.monitoring_enabled = state
         if state:
-            self.reload_config() # 모니터링 시작 시 최신 Config 로드
+            self.reload_config() 
 
     @Slot()
     def request_clear(self):
@@ -85,24 +82,22 @@ class ZmqWorker(QThread):
         total_events = int(header[2])
         queue_size = int(header[3])
         pool_free_size = int(header[4])
-        
-        current_time = time.time()
-        elapsed = current_time - self.last_telemetry_time
-        if elapsed >= 0.5: 
-            self.current_rate = (total_events - self.last_events) / elapsed
-            self.last_telemetry_time = current_time
-            self.last_events = total_events
 
         telemetry = {
             'events': total_events,
-            'rate': round(float(self.current_rate), 1),
             'dataq': queue_size,
             'pool': pool_free_size
         }
         
-        if not self.monitoring_enabled or num_events == 0 or samples_per_ch == 0:
+        current_time = time.time()
+        elapsed_render = current_time - self.last_render_time
+        
+        # 💡 [렌더링 스로틀링] 대시보드(telemetry)는 즉각 쏘되, 화면 그리기 주기가 안 되었으면 연산 건너뜀
+        if not self.monitoring_enabled or num_events == 0 or samples_per_ch == 0 or elapsed_render < self.render_interval:
             self.data_ready.emit("TELEMETRY_ONLY", None, telemetry, {})
             return
+            
+        self.last_render_time = current_time
 
         wave_offset = 24
         wave_size = 4 * 4096 * 8
@@ -121,7 +116,6 @@ class ZmqWorker(QThread):
             waveforms[ch] = [valid_wave]
             charges[ch] = charge_array[ch, :num_events].tolist()
             
-            # 💡 [제1원리 탐지] Config의 OFFSET과 THRESHOLD를 기준으로 직접 평가
             hw_offset = self.hw_config[ch]["offset"]
             hw_thr = self.hw_config[ch]["threshold"]
             
@@ -130,12 +124,10 @@ class ZmqWorker(QThread):
                 self.baseline_stats[ch]["count"] += 1
                 self.baseline_stats[ch]["real_mean"] = float(np.mean(pedestal_region))
                 
-                # 방사선 펄스가 없는 프리트리거 구간의 요동이 설정된 문턱값의 80%를 넘으면 공통모드 EFT 노이즈로 확정
                 max_deviation = np.max(np.abs(pedestal_region - hw_offset))
                 if max_deviation > (hw_thr * 0.8): 
                     self.baseline_stats[ch]["anomalies"] += 1
                     
-                    # FFT 수행 시 동적 평균이 아닌 '하드웨어 절대 오프셋'을 빼서 진짜 흔들림의 크기를 주파수화 함
                     wave_dc_removed = valid_wave - hw_offset
                     fft_vals = np.fft.rfft(wave_dc_removed)
                     fft_power = np.abs(fft_vals) ** 2 
