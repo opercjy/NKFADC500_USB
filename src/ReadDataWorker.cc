@@ -116,19 +116,22 @@ void ReadDataWorker::ReadLoop() {
                             int num_ped = ped_end - ped_start;
                             
                             for (int i = ped_start; i < ped_end; ++i) {
-                                // 💡 [12-bit 비트 마스킹 적용] 상위 4비트 상태 플래그 제거
                                 uint16_t adc = (*reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2))) & 0x0FFF;
                                 ped += adc;
                             }
                             if (num_ped > 0) ped /= num_ped;
 
                             double ch_charge = 0;
-                            for (int i = SKIP_BINS; i < samples_per_ch; ++i) {
-                                // 💡 [12-bit 비트 마스킹 적용]
+                            // 💡 [핵심 패치] 파형은 0번 인덱스부터 끝까지 순수 원본 ADC를 모니터 버퍼에 담습니다.
+                            for (int i = 0; i < samples_per_ch; ++i) {
                                 uint16_t adc = (*reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2))) & 0x0FFF;
-                                double inverted_adc = ped - adc;
-                                ch_charge += inverted_adc;
-                                if (i < 4096) mon_ev->payload.last_waveform[ch][i] = inverted_adc;
+                                if (i < 4096) mon_ev->payload.last_waveform[ch][i] = adc;
+                                
+                                // 💡 전하량 계산용으로만 페데스탈 차감(Inverted)을 수행합니다.
+                                if (i >= SKIP_BINS) {
+                                    double inverted_adc = ped - adc;
+                                    ch_charge += inverted_adc;
+                                }
                             }
                             for (int i = samples_per_ch; i < 4096; ++i) mon_ev->payload.last_waveform[ch][i] = 0.0;
                             mon_ev->payload.charge_array[ch][idx] = ch_charge;
