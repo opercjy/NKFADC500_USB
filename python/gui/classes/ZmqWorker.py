@@ -7,7 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class ZmqWorker(QThread):
-    # 💡 [핵심 패치] 모든 인자를 object로 변경하여 C++ 변환 에러(copy-convert) 원천 차단
+    # 시그널 규격: waveforms, charges, telemetry, anomaly_data
     data_ready = Signal(object, object, object, object)
 
     def __init__(self):
@@ -18,6 +18,11 @@ class ZmqWorker(QThread):
         self.socket = None
         self.dt = 2e-9 
         self.baseline_stats = {ch: {"count": 0, "anomalies": 0} for ch in range(4)}
+        
+        # 💡 [버그 복구] 트리거 레이트(Hz) 계산용 변수 부활
+        self.last_telemetry_time = time.time()
+        self.last_events = 0
+        self.current_rate = 0.0
 
     @Slot(bool)
     def set_monitoring_state(self, state):
@@ -37,10 +42,8 @@ class ZmqWorker(QThread):
         self.socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
         while self.running:
-            if not self.monitoring_enabled:
-                time.sleep(0.1)
-                continue
-
+            # 💡 [핵심 패치] 모니터링 체크박스 유무와 상관없이 무조건 ZMQ 패킷은 수신합니다!
+            # 그래야 우측 대시보드(Telemetry)가 항상 살아 숨쉽니다.
             try:
                 if self.socket.poll(100):
                     msg = self.socket.recv(flags=zmq.NOBLOCK)
@@ -56,17 +59,29 @@ class ZmqWorker(QThread):
             return
             
         header = np.frombuffer(data_bytes[:24], dtype=np.uint32)
-        num_events = header[0]
-        samples_per_ch = header[1]
+        num_events = int(header[0])
+        samples_per_ch = int(header[1])
+        total_events = int(header[2])
+        queue_size = int(header[3])
+        pool_free_size = int(header[4])
         
-        # 💡 [핵심 패치] np.uint32를 순수 파이썬 int로 변환하여 전송
+        # 💡 [버그 복구] 정확한 초당 트리거 레이트(Hz) 계산 로직 복원
+        current_time = time.time()
+        elapsed = current_time - self.last_telemetry_time
+        if elapsed >= 0.5: # 0.5초마다 갱신
+            self.current_rate = (total_events - self.last_events) / elapsed
+            self.last_telemetry_time = current_time
+            self.last_events = total_events
+
         telemetry = {
-            'events': int(header[2]),
-            'dataq': int(header[3]),
-            'pool': int(header[4])
+            'events': total_events,
+            'rate': round(float(self.current_rate), 1),
+            'dataq': queue_size,
+            'pool': pool_free_size
         }
         
-        if num_events == 0:
+        # 💡 [최적화 유지] 모니터링 체크박스가 꺼져있으면 무거운 파형 추출은 생략하고 텔레메트리만 보냅니다.
+        if not self.monitoring_enabled or num_events == 0 or samples_per_ch == 0:
             self.data_ready.emit("TELEMETRY_ONLY", None, telemetry, {})
             return
 
