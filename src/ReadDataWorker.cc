@@ -99,6 +99,10 @@ void ReadDataWorker::ReadLoop() {
                 size_t offset = 0;
                 
                 while (offset + event_size <= residual_buffer_.size()) {
+                    
+                    // 💡 [치명적 버그 수정] 모니터링 버퍼 여부와 상관없이 모든 획득 이벤트를 무조건 카운트!
+                    total_events_.fetch_add(1, std::memory_order_relaxed);
+
                     if (!mon_ev) {
                         mon_ev = g_pipeline.AcquireFreeEvent();
                         if (mon_ev) std::memset(&mon_ev->payload, 0, sizeof(LiveMonitorPacket));
@@ -122,12 +126,10 @@ void ReadDataWorker::ReadLoop() {
                             if (num_ped > 0) ped /= num_ped;
 
                             double ch_charge = 0;
-                            // 💡 [핵심 패치] 파형은 0번 인덱스부터 끝까지 순수 원본 ADC를 모니터 버퍼에 담습니다.
                             for (int i = 0; i < samples_per_ch; ++i) {
                                 uint16_t adc = (*reinterpret_cast<const uint16_t*>(evt_bytes + 32 + (i * 8) + (ch * 2))) & 0x0FFF;
                                 if (i < 4096) mon_ev->payload.last_waveform[ch][i] = adc;
                                 
-                                // 💡 전하량 계산용으로만 페데스탈 차감(Inverted)을 수행합니다.
                                 if (i >= SKIP_BINS) {
                                     double inverted_adc = ped - adc;
                                     ch_charge += inverted_adc;
@@ -137,7 +139,6 @@ void ReadDataWorker::ReadLoop() {
                             mon_ev->payload.charge_array[ch][idx] = ch_charge;
                         }
                         mon_ev->payload.num_events++;
-                        total_events_.fetch_add(1, std::memory_order_relaxed);
                     }
                     offset += event_size;
                 }
