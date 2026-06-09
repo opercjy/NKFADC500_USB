@@ -87,7 +87,6 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(console_widget)
         main_splitter.setSizes([700, 250])
 
-        # Production 오프라인 툴의 상태만 RunControl로 전달 (온라인 통계는 분리됨)
         self.daq_manager.process_finished.connect(self.tab_run.handle_daq_finished)
         self.daq_manager.process_finished.connect(lambda: self.tab_db.refresh_db())
         self.tab_prod.prod_manager.process_finished.connect(lambda: self.tab_db.refresh_db())
@@ -102,19 +101,20 @@ class MainWindow(QMainWindow):
         self.clock_timer.timeout.connect(self.global_clock_tick)
         self.clock_timer.start(1000)
 
-    # 💡 [핵심 패치] ZmqWorker로부터 텔레메트리 데이터를 수신합니다.
-    @Slot(object, object, int, dict)
-    def dispatch_plot_data(self, waveforms, charges, samples_per_ch, telemetry):
-        # 1. 텔레메트리 숫자(대시보드)는 모니터 화면이 꺼져있어도 100% 무조건 업데이트됩니다!
+    # =========================================================================
+    # 💡 [치명적 버그 수정] Signal 핀 매핑 완전 동기화
+    # ZmqWorker에서 보내는 (waveforms, charges, telemetry, anomaly_data) 규격과 100% 일치시킴
+    # =========================================================================
+    @Slot(object, object, dict, dict)
+    def dispatch_plot_data(self, waveforms, charges, telemetry, anomaly_data):
         if telemetry:
             self.tab_run.update_external_stats(telemetry)
             
         if isinstance(waveforms, str) and waveforms == "TELEMETRY_ONLY":
             return
 
-        # 2. 무거운 배열 그리기 연산은 모니터 탭이 켜져 있을 때만 실행됩니다.
         is_visible = (self.tabs.currentIndex() == 1)
-        self.tab_monitor.update_plots(waveforms, charges, samples_per_ch, is_visible)
+        self.tab_monitor.update_plots(waveforms, charges, is_visible, anomaly_data)
 
     def global_clock_tick(self):
         now = datetime.now()
@@ -128,7 +128,6 @@ class MainWindow(QMainWindow):
         total, used, free = shutil.disk_usage(os.getcwd())
         self.dashboard.lbl_disk.setText(f"Disk Free: {free // (2**30)} GB")
 
-    # 💡 [핵심 패치] 덮어쓰기 로직을 지우고, 순수하게 콘솔 로깅 역할만 수행합니다.
     @Slot(str)
     def append_log(self, text):
         self.console.append(text)
