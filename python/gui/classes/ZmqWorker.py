@@ -7,8 +7,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 class ZmqWorker(QThread):
-    # 시그널 인자 규격: waveforms, charges, telemetry, anomaly_data
-    data_ready = Signal(object, object, dict, dict)
+    # 💡 [핵심 패치] 모든 인자를 object로 변경하여 C++ 변환 에러(copy-convert) 원천 차단
+    data_ready = Signal(object, object, object, object)
 
     def __init__(self):
         super().__init__()
@@ -52,17 +52,18 @@ class ZmqWorker(QThread):
         self.context.term()
 
     def process_data(self, data_bytes):
-        # 195096 바이트 (LiveMonitorPacket 구조체 매핑)
         if len(data_bytes) < 195096:
             return
             
         header = np.frombuffer(data_bytes[:24], dtype=np.uint32)
         num_events = header[0]
         samples_per_ch = header[1]
+        
+        # 💡 [핵심 패치] np.uint32를 순수 파이썬 int로 변환하여 전송
         telemetry = {
-            'events': header[2],
-            'dataq': header[3],
-            'pool': header[4]
+            'events': int(header[2]),
+            'dataq': int(header[3]),
+            'pool': int(header[4])
         }
         
         if num_events == 0:
@@ -86,9 +87,6 @@ class ZmqWorker(QThread):
             waveforms[ch] = [valid_wave]
             charges[ch] = charge_array[ch, :num_events].tolist()
             
-            # =========================================================================
-            # [아노말리 탐지] 임의의 하드코딩 제거, 순수 통계적(IQR) 탐지로 복원
-            # =========================================================================
             if len(valid_wave) > 100:
                 analysis_region = valid_wave[20:80] 
                 if len(analysis_region) > 10:
@@ -96,14 +94,12 @@ class ZmqWorker(QThread):
                     q3 = np.percentile(analysis_region, 75)
                     iqr = q3 - q1
                     
-                    # 수학적으로 IQR이 0이 되는 극단적 상황만 방지
                     safe_iqr = iqr if iqr > 0 else 1.0 
                     lower_bound = q1 - 2.0 * safe_iqr
                     upper_bound = q3 + 2.0 * safe_iqr
                     
                     outliers = np.sum((analysis_region < lower_bound) | (analysis_region > upper_bound))
                     
-                    # 10% 이상 이탈 시 이상 파형으로 간주
                     if outliers > (len(analysis_region) * 0.1): 
                         self.baseline_stats[ch]["anomalies"] += 1
                         wave_dc_removed = valid_wave - np.mean(valid_wave)
